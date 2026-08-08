@@ -128,12 +128,45 @@ interface LeaseResult {
   instanceId: string
   response: Response
   admitted: boolean
+  cleanup: () => Promise<void>
 }
-
 // Acquire a token from the pool, run the full Freebuff protocol flow.
-// Returns the response and a cleanup function to release resources.
+// Retries on model_locked (session bound to a different model) by trying
+// the next idle token. Returns the response and a cleanup function.
 async function executeWithLease(
   pool: FreebuffTokenPool,
+  model: string,
+  body: Record<string, unknown>,
+): Promise<LeaseResult & { cleanup: () => Promise<void> }> {
+  let client: FreebuffTokenClient
+  let result: LeaseResult
+  let attempts = 0
+  const maxAttempts = pool.tokenCount
+
+  while (attempts < maxAttempts) {
+    client = await pool.acquire(model)
+    try {
+      result = await tryLeaseClient(client, model, body)
+      const cleanup = async () => {
+        try { await client.finishRun(result.runId) } catch {}
+        if (result.admitted) { try { await client.releaseSession() } catch {} }
+        pool.release(client)
+      }
+      return { ...result, cleanup }
+    } catch (err) {
+      pool.release(client)
+      const msg = (err as Error).message
+      if (msg.includes('model_locked') && attempts < maxAttempts - 1) {
+        attempts++
+        continue
+      }
+      throw err
+    }
+  }
+  throw new Error('All tokens exhausted trying to acquire a session')
+}
+
+async function tryLeaseClient(
   client: FreebuffTokenClient,
   model: string,
   body: Record<string, unknown>,
@@ -158,7 +191,6 @@ async function executeWithLease(
 
   return { runId, instanceId, response, admitted }
 }
-
 // Handle chat/completions or responses requests.
 async function handleChat(
   req: Request,
@@ -207,15 +239,10 @@ async function handleChat(
   }
 
   // Acquire a token from the pool and run the Freebuff flow
+  // (retries on model_locked with the next token)
   let result: LeaseResult
-  let client: FreebuffTokenClient
   try {
-    client = await pool.acquire(modelId)
-    try {
-      result = await executeWithLease(pool, client, modelId, chatBody)
-    } finally {
-      pool.release(client)
-    }
+    result = await executeWithLease(pool, modelId, chatBody)
   } catch (err) {
     const e = err as Error
     const msg = e.message ?? 'Session admission failed'
@@ -229,7 +256,7 @@ async function handleChat(
     })
   }
 
-  const { runId, admitted, response } = result
+  const { runId, response } = result
 
   // Translate Freebuff-specific errors into OpenAI-compatible error responses
   if (!response.ok) {
@@ -241,22 +268,17 @@ async function handleChat(
     const message = String(fbError?.message ?? fbError?.error ?? `Freebuff API error: ${response.status}`)
 
     const { openAIError, httpStatus } = formatFreebuffError(status, message, modelId)
+    void result.cleanup()
     return new Response(JSON.stringify({ error: openAIError }), {
       status: response.status === 429 ? 429 : response.status >= 500 ? 503 : 400,
       headers: { 'Content-Type': 'application/json' },
     })
   }
 
-  // Cleanup function (best-effort)
-  const cleanup = async () => {
-    try { await client.finishRun(runId) } catch {}
-    if (admitted) { try { await client.releaseSession() } catch {} }
-  }
-
   if (!chatBody.stream) {
     // Non-streaming: consume upstream JSON, then clean up
     const json = await response.json()
-    void cleanup()
+    void result.cleanup()
     return new Response(JSON.stringify(json), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -272,7 +294,7 @@ async function handleChat(
     },
     async flush(controller) {
       controller.terminate()
-      void cleanup().catch(() => {})
+      void result.cleanup().catch(() => {})
     },
   })
 
@@ -324,38 +346,28 @@ async function handleClaudeMessages(
 
   // Acquire a token from the pool and run the Freebuff flow (same as chat)
   let result: LeaseResult
-  let client: FreebuffTokenClient
   try {
-    client = await pool.acquire(model)
-    try {
-      result = await executeWithLease(pool, client, model, openaiBody)
-    } finally {
-      pool.release(client)
-    }
+    result = await executeWithLease(pool, model, openaiBody)
   } catch (err) {
     return handleFreebuffError(err, model)
   }
 
-  const { runId, admitted, response } = result
+  const { response } = result
 
   if (!response.ok) {
     return handleFreebuffResponseError(response, model)
   }
 
-  // Cleanup when done
-  const cleanup = () => {
-    void client.finishRun(runId).catch(() => {})
-    if (admitted) void client.releaseSession().catch(() => {})
-  }
-
   if (!stream) {
     const json = await response.json() as Record<string, unknown>
-    cleanup()
+    void result.cleanup()
     return new Response(JSON.stringify(openAINonStreamToClaude(json)), {
       headers: { 'Content-Type': 'application/json' },
     })
   }
 
+  // Cleanup when stream ends
+  void result.cleanup()
   // Streaming: translate OpenAI SSE → Anthropic SSE
   const sseStream = openAIToClaudeSSE(response.body!)
   return new Response(sseStream, {

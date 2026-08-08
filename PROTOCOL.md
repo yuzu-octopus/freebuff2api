@@ -83,8 +83,8 @@ Headers: `Authorization: Bearer <token>`, `user-agent: ai-sdk/openai-compatible/
 
 ### The CLI-only gate
 
-Free-mode chat is gated server-side to the official freebuff CLI: a third-party request that passes all of the above gets `403 free_mode_cli_required` — *"Free mode is only available through the freebuff CLI. Calling the API directly is not supported and may get your account banned."* The free session endpoint (GET/DELETE, quota introspection) is not gated; only free-mode inference is. The supported unlimited-free-model surface is the CLI itself.
+Free-mode chat is gated server-side to the official freebuff CLI: a third-party request that passes all of the above gets `403 free_mode_cli_required` — *"Free mode is only available through the freebuff CLI. Install it with `npm i -g freebuff`, then run `freebuff`. Calling the API directly is not supported and may get your account banned."* The server checks beyond user-agent spoofing — matching the exact SDK version (`0.10.7`) and sending all headers (`x-freebuff-instance-id`, `codebuff_metadata` with `cost_mode: 'free'`) is not sufficient. The free session endpoint (GET/DELETE, quota introspection) is not gated; only free-mode inference is. The supported unlimited-free-model surface is the CLI itself.
 
-## Anti-abuse notes (from source comments)
+### Session retry on model_locked
 
-The backend explicitly hardens against quota-bypass: retired wire ids that once reached premium models via alternate slugs were deleted outright ("an extra id is an extra door"), geo-gating exists (`country_blocked`), IP caps (`ip_capped`), per-user session pools, and sock-puppet clusters are actively countered. Model admission is keyed by model id server-side.
+When a token has an active session for a different model, the server returns `409 model_locked` on GET /session. The router detects this, invalidates the cached session state, and the pool retries with the next idle token. This transparently handles the case where multiple tokens have sessions bound to different models.

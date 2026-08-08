@@ -41,7 +41,7 @@ export interface Session {
 
 
 // Wire header the SDK uses (see PROTOCOL.md line 84).
-export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.1.0/codebuff'
+export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.10.7/codebuff'
 
 // Freebuff sessions expire after ~6 hours; rotate runs before then.
 const RUN_ROTATION_INTERVAL_MS = 5.5 * 60 * 60 * 1000
@@ -117,6 +117,12 @@ export class FreebuffTokenClient {
     const body = await res.json().catch(() => null)
 
     if (!res.ok) {
+      // 409 model_locked: existing session is bound to a different model.
+      // Invalidate our cached instanceId so the next GET starts fresh.
+      if (res.status === 409) {
+        this.invalidateSession()
+        return null
+      }
       if (res.status === 404 || body?.status === 'none') return null
       const status = body?.status ?? `http_${res.status}`
       const detail = body?.message ?? body?.error ?? ''
@@ -131,9 +137,16 @@ export class FreebuffTokenClient {
     if (body?.status === 'active') {
       if (body.model && body.model !== model) return null
       this.instanceId = body.instanceId
+      this.sessionModel = model
       return body
     }
     return null
+  }
+
+  /** Invalidate cached session state (instanceId + model). */
+  private invalidateSession(): void {
+    this.instanceId = null
+    this.sessionModel = null
   }
 
   /** Poll session endpoint while in waiting room queue. */
