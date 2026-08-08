@@ -128,17 +128,18 @@ Standard OpenAI-compatible request body (supports `stream: true` for SSE).
 
 OpenAI Responses API — translated to chat format internally.
 
+### `POST /v1/messages`
+
+**Anthropic-compatible endpoint** — translates `/v1/messages` requests to
+OpenAI chat format and converts streaming responses back to Anthropic SSE.
+Supports text, image, tool_use, tool_result, and thinking content blocks.
 ## Project layout
 
-```
-router/
-├── server.ts          # HTTP server, routing, error mapping
-├── freebuff.ts        # Token pool + Freebuff protocol client
+├── anthropic.ts       # Anthropic /v1/messages format bridge
+├── types.ts           # Shared TypeScript types
 ├── config.ts          # Config loading, model catalog, token resolution
 ├── translate.ts       # Responses API → Chat Completions translator
-├── types.ts           # Shared TypeScript types
 ├── smoke-test.ts      # End-to-end smoke test with mock backend
-└── *.test.ts          # Unit + integration tests
 
 PROTOCOL.md            # Reverse-engineered Freebuff protocol reference
 source/                # Reference sources (gitignored, not shipped)
