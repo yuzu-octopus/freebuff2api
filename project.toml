@@ -1,0 +1,215 @@
+[project]
+name = "Freebuff LLM Router"
+tagline = "OpenAI-compatible gateway for Freebuff"
+subtitle = "Route any agent at localhost:8787/v1 — multi-token concurrency, session affinity, CLI identity spoofing, and live model enrichment over Freebuff's protocol."
+description = "A local OpenAI-compatible /v1 gateway that routes LLM requests through Freebuff (the free tier of Codebuff) using multi-token session pooling, CLI user-agent spoofing, and cost_mode: 'free' billing."
+github_url = "https://github.com/yuzu-octopus/freebuff2api"
+page_url = "https://yuzu-octopus.github.io/freebuff2api/"
+logo_svg = """
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <polygon points="32,4 10,20 10,44 32,60 54,44 54,20" fill="var(--panel)" stroke="var(--purple)" stroke-width="2"/>
+  <text x="32" y="42" font-family="JetBrains Mono, monospace" font-size="28" font-weight="700" fill="var(--purple)" text-anchor="middle">F</text>
+</svg>
+"""
+
+[brand]
+tagline = "OpenAI-compatible gateway"
+
+[[sections]]
+id = "features"
+type = "features"
+title = "Features"
+icon = "grid"
+
+[[sections.items]]
+title = "OpenAI-Compatible Surface"
+body = "`/v1/chat/completions` and `/v1/responses` (Responses API → chat format translation). Point any agent — Claude Code, OpenAI SDK, ai-sdk, Cursor — at localhost:8787/v1."
+
+[[sections.items]]
+title = "Multi-Token Concurrency"
+body = "Each Freebuff account has a single global active session per model. The router reads comma-separated tokens from `ROUTER_TOKEN` and maintains an idle-slot pool — each token is an independent session slot for parallel request handling."
+
+[[sections.items]]
+title = "Session Affinity"
+body = "Reuses a token that already has an active session for the requested model. Avoids session churn and preserves Freebuff's server-side context/cache for the same conversation."
+
+[[sections.items]]
+title = "Run Rotation"
+body = "Agent runs rotate every 5.5 hours to stay under Freebuff's ~6-hour session expiry ceiling."
+
+[[sections.items]]
+title = "Live Model Enrichment"
+body = "`/v1/models` augments the static 7-model catalog with real-time `rateLimitsByModel` and `limitedModelOffers` fetched from the Freebuff session endpoint."
+
+[[sections.items]]
+title = "CLI Identity Spoofing"
+body = "Spoofs `user-agent: ai-sdk/openai-compatible/0.1.0/codebuff` and sends `codebuff_metadata.cost_mode: 'free'` to bypass the `free_mode_cli_required` gate."
+
+[[sections.items]]
+title = "Auth Gating"
+body = "Optional `routerKey` protects `/v1/*` routes with `Authorization: Bearer` checking."
+
+[[sections]]
+id = "architecture"
+type = "text"
+title = "Architecture"
+icon = "layers"
+body = """
+<div class="callout callout-info">
+The router runs entirely locally — no external services, no telemetry, no data leaving your machine except Freebuff API calls.
+</div>
+
+```
+Agent (OpenAI /v1/chat/completions)
+  │  user-agent: ai-sdk/openai-compatible/.../codebuff
+  ▼
+localhost:8787/v1/chat/completions
+  │
+  ├─ Pool.acquire(model)  → pick idle Freebuff token (session affinity)
+  ├─ POST /api/v1/freebuff/session    (admit if no active session)
+  ├─ POST /api/v1/agent-runs (START)  → runId
+  ├─ POST /api/v1/chat/completions    (stream back SSE)
+  └─ release → finish run + release session
+```
+
+<div class="callout callout-warning">
+<strong>Important:</strong> Free mode chat is gated server-side to the official Freebuff CLI.
+The router spoofs CLI identity to access the free tier — use at your own risk.
+See PROTOCOL.md for the full reverse-engineered protocol.
+</div>
+"""
+
+[[sections]]
+id = "quickstart"
+type = "code_block"
+title = "Quick Start"
+icon = "play"
+language = "bash"
+code = """
+# 1. Get your Freebuff token
+export ROUTER_TOKEN=your_token_here
+
+# For concurrency (optional):
+# export ROUTER_TOKEN=token_a,token_b,token_c
+
+# 2. Start the router
+bun dev
+
+# 3. Point your agent at http://localhost:8787/v1
+"""
+
+[[sections]]
+id = "config"
+type = "table"
+title = "Configuration"
+icon = "gear"
+headers = ["Env Var", "Default", "Description"]
+
+[[sections.rows]]
+cells = ["`ROUTER_TOKEN`", "(none)", "Freebuff API token(s), comma-separated for concurrency"]
+
+[[sections.rows]]
+cells = ["`ROUTER_CONFIG`", "`router.config.json`", "Custom config file path"]
+
+[[sections.rows]]
+cells = ["`routerKey` (in config)", "`ROUTER_TOKEN`", "Router auth key for `/v1/*` routes"]
+
+[[sections]]
+id = "models"
+type = "table"
+title = "Model Catalog"
+icon = "chip"
+headers = ["Model ID", "Display", "Quota", "Type"]
+
+[[sections.rows]]
+cells = ["`deepseek/deepseek-v4-flash`", "DeepSeek V4 Flash", "unlimited", "Default"]
+
+[[sections.rows]]
+cells = ["`mimo/mimo-v2.5`", "MiMo 2.5", "unlimited", "Multimodal"]
+
+[[sections.rows]]
+cells = ["`deepseek/deepseek-v4-pro`", "DeepSeek V4 Pro", "6/day", "Premium"]
+
+[[sections.rows]]
+cells = ["`minimax/minimax-m3`", "MiniMax M3", "6/day", "Premium"]
+
+[[sections.rows]]
+cells = ["`openai/gpt-5.6-luna`", "GPT-5.6 Luna", "6/day", "Premium"]
+
+[[sections.rows]]
+cells = ["`z-ai/glm-5.2`", "GLM 5.2", "referral-gated", "Referral"]
+
+[[sections.rows]]
+cells = ["`anthropic/claude-fable-5`", "Claude Fable 5", "limited", "Limited offer"]
+
+[[sections]]
+id = "testing"
+type = "steps"
+title = "Testing"
+icon = "play"
+
+[[sections.items]]
+title = "Run unit tests"
+body = "`bun test` — 31 tests across config, freebuff protocol, server, and translate modules."
+
+[[sections.items]]
+title = "Run smoke test"
+body = "`bun smoke` — starts a mock Freebuff backend and verifies the full HTTP surface end-to-end."
+
+[[sections]]
+id = "stack"
+type = "stack"
+title = "Tech Stack"
+icon = "layers"
+
+[[sections.items]]
+name = "Bun"
+description = "Runtime, test runner, and HTTP server"
+
+[[sections.items]]
+name = "TypeScript"
+description = "Typed protocol implementation"
+
+[[sections.items]]
+name = "Freebuff"
+description = "Free tier of Codebuff — upstream LLM service"
+
+[[sections]]
+id = "comparison"
+type = "table"
+title = "Comparison with Other Implementations"
+icon = "chip"
+headers = ["Feature", "freebuff2api (this)", "Quorinex (Go)", "v2 Timcuan", "kele68108"]
+
+[[sections.rows]]
+cells = ["Language/Runtime", "TypeScript/Bun", "Go", "Python", "Python/FastAPI"]
+
+[[sections.rows]]
+cells = ["Multi-token", "Comma-separated env", "AUTH_TOKENS env/JSON", "accounts.json + env", "Comma-separated env"]
+
+[[sections.rows]]
+cells = ["Session affinity", "Prefer same-model tokens", "Per-agent runs map", "Model-affinity strategy", "Optimistic 30s cache"]
+
+[[sections.rows]]
+cells = ["Run rotation", "5.5h (config)", "Configurable interval", "Not specified", "Run-chain (parent/child)"]
+
+[[sections.rows]]
+cells = ["Waiting room", "Promise-based waiter", "Queue position polling", "Strategy-based", "Stale-witness detection"]
+
+[[sections.rows]]
+cells = ["Session queuing", "No (waits)", "Yes (polls position)", "Least-loaded strategy", "Optimistic reuse window"]
+
+[[sections.rows]]
+cells = ["Error recovery", "Format Freebuff errors to OpenAI", "Session invalidation on conflict (409)", "Error hierarchy + retries", "Stale witness + session invalidation"]
+
+[[sections.rows]]
+cells = ["Claude support", "No", "Yes (/v1/messages)", "No", "No"]
+
+[[sections.rows]]
+cells = ["Tool schema normalization", "No", "Yes (LobeChat compat)", "No", "No"]
+
+[[sections.rows]]
+cells = ["Web UI / admin panel", "No", "No", "No", "Yes (Vue3 + SSE logs)"]
+
+[[sections.rows]]
+cells = ["Tests", "31 tests pass", "Not found in repo", "Extensive test suite", "Extensive test suite"]
