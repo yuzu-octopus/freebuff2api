@@ -41,7 +41,9 @@ export interface Session {
 
 
 // Wire header the SDK uses (see PROTOCOL.md line 84).
-export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.10.7/codebuff'
+// Chat requests use the browser runtime variant to identify as the
+// ai-sdk OpenAI-compatible provider running in browser context.
+export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.0.0-test/codebuff ai-sdk/provider-utils/3.0.20 runtime/browser'
 
 // Freebuff sessions expire after ~6 hours; rotate runs before then.
 const RUN_ROTATION_INTERVAL_MS = 5.5 * 60 * 60 * 1000
