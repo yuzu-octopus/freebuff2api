@@ -83,8 +83,6 @@ Headers: `Authorization: Bearer <token>`, `user-agent: ai-sdk/openai-compatible/
 
 ### The CLI-only gate
 
-Free-mode chat is gated server-side to the official freebuff CLI: a third-party request that passes all of the above gets `403 free_mode_cli_required` — *"Free mode is only available through the freebuff CLI. Install it with `npm i -g freebuff`, then run `freebuff`. Calling the API directly is not supported and may get your account banned."* The server checks beyond user-agent spoofing — matching the exact SDK version (`0.10.7`) and sending all headers (`x-freebuff-instance-id`, `codebuff_metadata` with `cost_mode: 'free'`) is not sufficient. The free session endpoint (GET/DELETE, quota introspection) is not gated; only free-mode inference is. The supported unlimited-free-model surface is the CLI itself.
+Free-mode chat is gated server-side to the official freebuff CLI. Even a request with the correct user-agent (`ai-sdk/openai-compatible/0.0.0-test/codebuff ai-sdk/provider-utils/3.0.20 runtime/browser`), all headers (`x-freebuff-instance-id`, `codebuff_metadata` with `cost_mode: 'free'`), and a valid session will get `403 free_mode_cli_required` — *"Free mode is only available through the freebuff CLI. Install it with `npm i -g freebuff`, then run `freebuff`. Calling the API directly is not supported and may get your account banned."*
 
-### Session retry on model_locked
-
-When a token has an active session for a different model, the server returns `409 model_locked` on GET /session. The router detects this, invalidates the cached session state, and the pool retries with the next idle token. This transparently handles the case where multiple tokens have sessions bound to different models.
+The gate checks something beyond header spoofing — likely token metadata (CLI-issued vs credentials file) or an unspoofable signature. The free session endpoint (GET/DELETE, quota introspection) is not gated; only free-mode inference is. The supported unlimited-free-model surface is the CLI itself.
