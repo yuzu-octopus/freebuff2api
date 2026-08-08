@@ -14,8 +14,8 @@
  */
 
 import { serve } from 'bun'
-import { loadConfig, MODEL_CATALOG, type RouterConfig } from './config'
-import { type FreebuffTokenClient, FreebuffTokenPool, createDefaultTokenProvider } from './freebuff'
+import { type FreebuffTokenClient, FreebuffTokenPool } from './freebuff'
+import { loadConfig, MODEL_CATALOG, type RouterConfig, resolveFreebuffTokens } from './config'
 import { isResponsesRequest, translateResponsesToChat } from './translate'
 import type { ChatMessage } from './types'
 
@@ -286,7 +286,7 @@ async function handleChat(
 
 export async function startRouter(configOverride?: RouterConfig): Promise<ReturnType<typeof serve>> {
   const config = configOverride ?? loadConfig()
-  const { tokens } = createDefaultTokenProvider()
+  const tokens = resolveFreebuffTokens()
   const pool = new FreebuffTokenPool(config.freebuff.apiHost, tokens)
 
   const server = serve({

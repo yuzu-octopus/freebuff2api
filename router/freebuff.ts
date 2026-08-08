@@ -36,10 +36,6 @@ export interface Session {
   }>
 }
 
-export interface FreebuffClientOpts {
-  apiHost: string
-  tokens: string[]
-}
 
 // Wire header the SDK uses (see PROTOCOL.md line 84).
 export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.1.0/codebuff'
@@ -368,10 +364,4 @@ export class FreebuffTokenPool {
       return null
     }
   }
-}
-
-/** Build a TokenProvider that reads ROUTER_TOKEN env (comma-separated for multi-token)
- * or the CLI credentials file. */
-export function createDefaultTokenProvider(): { tokens: string[] } {
-  return { tokens: resolveFreebuffTokens() }
 }

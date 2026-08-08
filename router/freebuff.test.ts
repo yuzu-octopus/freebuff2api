@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test'
 import { serve } from 'bun'
 import { FreebuffTokenPool } from './freebuff'
+import { resolveFreebuffTokens } from './config'
 
 const VALID_TOKEN = 'test-token'
 
@@ -316,12 +317,11 @@ describe('FreebuffTokenPool', () => {
   })
 })
 
-describe('createDefaultTokenProvider', () => {
-  it('reads comma-separated tokens from ROUTER_TOKEN env', async () => {
+describe('resolveFreebuffTokens', () => {
+  it('reads comma-separated tokens from ROUTER_TOKEN env', () => {
     const original = process.env.ROUTER_TOKEN
     process.env.ROUTER_TOKEN = 'token-a,token-b,token-c'
     try {
-      const { resolveFreebuffTokens } = await import('./config')
       const tokens = resolveFreebuffTokens()
       expect(tokens).toEqual(['token-a', 'token-b', 'token-c'])
     } finally {
