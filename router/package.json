@@ -1,0 +1,16 @@
+{
+  "name": "freebuff-router",
+  "version": "0.1.0",
+  "description": "Local OpenAI-compatible v1 gateway. Point any agent's model base URL at localhost.",
+  "engines": {
+    "bun": ">=1.0"
+  },
+  "scripts": {
+    "dev": "bun server.ts",
+    "start": "bun server.ts",
+    "test": "bun test",
+    "smoke": "bun smoke-test.ts",
+    "lint": "bun build router/*.ts --no-codegen"
+  },
+  "type": "module"
+}
