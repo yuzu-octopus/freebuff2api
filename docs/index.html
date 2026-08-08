@@ -1013,7 +1013,7 @@
       <li><a href="#comparison"><span class="icon">
 
 <span class="material-symbols-outlined icon-chip" aria-hidden="true">memory</span>
-</span> Comparison with Other Implementations</a></li>
+</span> Comparison</a></li>
       
       
     </ul>
@@ -1056,7 +1056,7 @@
         
         <div class="card">
           <h3>Multi-Token Concurrency</h3>
-          <p>Each Freebuff account has a single global active session per model. The router reads comma-separated tokens from `ROUTER_TOKEN` and maintains an idle-slot pool — each token is an independent session slot for parallel request handling.</p>
+          <p>Each Freebuff account has a single global active session per model. The router reads comma-separated tokens from `FREEBUFF_TOKEN` and maintains an idle-slot pool — each token is an independent session slot for parallel request handling.</p>
         </div>
         
         <div class="card">
@@ -1101,18 +1101,36 @@
 The router runs entirely locally — no external services, no telemetry, no data leaving your machine except Freebuff API calls.
 </div>
 
-```
-Agent (OpenAI /v1/chat/completions)
-  │  user-agent: ai-sdk/openai-compatible/.../codebuff
-  ▼
-localhost:8787/v1/chat/completions
-  │
-  ├─ Pool.acquire(model)  → pick idle Freebuff token (session affinity)
-  ├─ POST /api/v1/freebuff/session    (admit if no active session)
-  ├─ POST /api/v1/agent-runs (START)  → runId
-  ├─ POST /api/v1/chat/completions    (stream back SSE)
-  └─ release → finish run + release session
-```
+<div class="flow-diagram">
+  <div class="flow-node">
+    <strong>Agent</strong>
+    <div class="flow-sub">OpenAI /v1/chat/completions</div>
+    <div class="flow-sub">user-agent: ai-sdk/openai-compatible/.../codebuff</div>
+  </div>
+  <div class="flow-arrow">▼</div>
+  <div class="flow-node">
+    <strong>localhost:8787</strong>
+    <div class="flow-sub">Pool.acquire(model) → idle Freebuff token</div>
+  </div>
+  <div class="flow-arrow">▼</div>
+  <div class="flow-steps">
+    <div class="flow-step">POST /api/v1/freebuff/session (admit if needed)</div>
+    <div class="flow-step">POST /api/v1/agent-runs START → runId</div>
+    <div class="flow-step">POST /api/v1/chat/completions (stream SSE)</div>
+    <div class="flow-step">release → finish run + release session</div>
+  </div>
+</div>
+
+<style>
+.flow-diagram { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 16px 0; }
+.flow-node { background: var(--panel); border: 1px solid var(--muted); border-radius: 8px; padding: 12px 20px; text-align: center; min-width: 200px; }
+.flow-node strong { color: var(--purple); }
+.flow-sub { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+.flow-arrow { color: var(--muted); font-size: 1.5rem; }
+.flow-steps { background: var(--panel); border-radius: 8px; padding: 12px 20px; text-align: left; }
+.flow-step { padding: 4px 0; border-bottom: 1px solid var(--muted); font-size: 0.85rem; }
+.flow-step:last-child { border-bottom: none; }
+</style>
 
 <div class="callout callout-warning">
 <strong>Important:</strong> Free mode chat is gated server-side to the official Freebuff CLI.
@@ -1134,12 +1152,10 @@ See PROTOCOL.md for the full reverse-engineered protocol.
       
       
       <pre><code class="language-bash"># 1. Get your Freebuff token
-export ROUTER_TOKEN=your_token_here
+export FREEBUFF_TOKEN=your_token_here
 
 # For concurrency (optional):
-# export ROUTER_TOKEN=token_a,token_b,token_c
-
-# 2. Start the router
+# export FREEBUFF_TOKEN=token_a,token_b,token_c
 bun dev
 
 # 3. Point your agent at http://localhost:8787/v1
@@ -1204,8 +1220,6 @@ bun dev
           
           <tr><td>`z-ai/glm-5.2`</td><td>GLM 5.2</td><td>referral-gated</td><td>Referral</td></tr>
           
-          <tr><td>`anthropic/claude-fable-5`</td><td>Claude Fable 5</td><td>limited</td><td>Limited offer</td></tr>
-          
         </tbody>
       </table>
       </div>
@@ -1257,7 +1271,7 @@ bun dev
   <section id="comparison" class="reveal">
     <div class="container">
       
-      <h2>Comparison with Other Implementations</h2>
+      <h2>Comparison</h2>
       
 
       
@@ -1278,13 +1292,13 @@ bun dev
           
           <tr><td>Waiting room</td><td>Promise-based waiter</td><td>Queue position polling</td><td>Strategy-based</td><td>Stale-witness detection</td></tr>
           
-          <tr><td>Session queuing</td><td>No (waits)</td><td>Yes (polls position)</td><td>Least-loaded strategy</td><td>Optimistic reuse window</td></tr>
+          <tr><td>Session queuing</td><td>Yes (5s polling, 30s timeout)</td><td>Yes (polls position)</td><td>Least-loaded strategy</td><td>Optimistic reuse 30s</td></tr>
           
           <tr><td>Error recovery</td><td>Format Freebuff errors to OpenAI</td><td>Session invalidation on conflict (409)</td><td>Error hierarchy + retries</td><td>Stale witness + session invalidation</td></tr>
           
-          <tr><td>Claude support</td><td>No</td><td>Yes (/v1/messages)</td><td>No</td><td>No</td></tr>
+          <tr><td>Claude / Anthropic support</td><td>Yes (/v1/messages)</td><td>Yes (/v1/messages)</td><td>No</td><td>No</td></tr>
           
-          <tr><td>Tool schema normalization</td><td>No</td><td>Yes (LobeChat compat)</td><td>No</td><td>No</td></tr>
+          <tr><td>Tool schema normalization</td><td>Yes ($ref + nullable)</td><td>Yes (LobeChat compat)</td><td>No</td><td>No</td></tr>
           
           <tr><td>Web UI / admin panel</td><td>No</td><td>No</td><td>No</td><td>Yes (Vue3 + SSE logs)</td></tr>
           
