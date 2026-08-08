@@ -17,6 +17,7 @@ import { serve } from 'bun'
 import { type FreebuffTokenClient, FreebuffTokenPool } from './freebuff'
 import { loadConfig, MODEL_CATALOG, type RouterConfig, resolveFreebuffTokens } from './config'
 import { isResponsesRequest, translateResponsesToChat } from './translate'
+import { claudeToOpenAI, initAnthropicStreamState, openAIChunkToClaudeEvents, finalizeClaudeStream } from './anthropic'
 import type { ChatMessage } from './types'
 
 // Convert a chat message from the incoming OpenAI body to our internal type.
@@ -284,6 +285,210 @@ async function handleChat(
   })
 }
 
+/**
+ * Handle Anthropic /v1/messages requests.
+ * Converts to OpenAI chat format, proxies to Freebuff, then translates
+ * the streaming response back to Anthropic SSE format.
+ */
+async function handleClaudeMessages(
+  req: Request,
+  config: RouterConfig,
+  pool: FreebuffTokenPool,
+): Promise<Response> {
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object') {
+    return new Response(JSON.stringify({ error: { message: 'Invalid JSON body' } }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  // Convert Anthropic → OpenAI format
+  const { openaiBody, model, stream } = claudeToOpenAI(body as Record<string, unknown>)
+
+  if (!model) {
+    return new Response(
+      JSON.stringify({ error: { message: 'Missing required parameter: model' } }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
+  const messages = openaiBody.messages as Array<unknown> | undefined
+  if (!messages || messages.length === 0) {
+    return new Response(
+      JSON.stringify({ error: { message: 'No messages provided' } }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
+  // Acquire a token from the pool and run the Freebuff flow (same as chat)
+  let result: LeaseResult
+  let client: FreebuffTokenClient
+  try {
+    client = await pool.acquire(model)
+    try {
+      result = await executeWithLease(pool, client, model, openaiBody)
+    } finally {
+      pool.release(client)
+    }
+  } catch (err) {
+    return handleFreebuffError(err, model)
+  }
+
+  const { runId, admitted, response } = result
+
+  if (!response.ok) {
+    return handleFreebuffResponseError(response, model)
+  }
+
+  // Cleanup when done
+  const cleanup = () => {
+    void client.finishRun(runId).catch(() => {})
+    if (admitted) void client.releaseSession().catch(() => {})
+  }
+
+  if (!stream) {
+    const json = await response.json() as Record<string, unknown>
+    cleanup()
+    return new Response(JSON.stringify(openAINonStreamToClaude(json)), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  // Streaming: translate OpenAI SSE → Anthropic SSE
+  const sseStream = openAIToClaudeSSE(response.body!)
+  return new Response(sseStream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    },
+  })
+}
+
+/**
+ * Convert an OpenAI SSE stream to Anthropic SSE events.
+ * Yields Anthropic-format SSE lines as Uint8Array chunks.
+ */
+async function* openAIToClaudeSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+  const reader = body.getReader()
+
+  // Send initial message_start event
+  yield new TextEncoder().encode('event: message_start\ndata: ' + JSON.stringify({
+    type: 'message_start',
+    message: {
+      id: crypto.randomUUID(),
+      type: 'message',
+      role: 'assistant',
+      model: '',
+      content: [],
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }) + '\n\n')
+
+  const state = initAnthropicStreamState()
+  let contentBlockIndex = 0
+  let toolBlockIndex = 0
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const text = new TextDecoder().decode(value)
+      for (const line of text.split('\n')) {
+        if (!line.startsWith('data:')) continue
+        const data = line.slice(5).trim()
+        if (data === '[DONE]') continue
+
+        try {
+          const chunk = JSON.parse(data)
+          const events = openAIChunkToClaudeEvents(chunk, state, contentBlockIndex, toolBlockIndex)
+          for (const event of events) {
+            yield new TextEncoder().encode('event: ' + event.type + '\ndata: ' + event.data + '\n\n')
+          }
+        } catch {
+          // Non-JSON, skip
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  // Send final events
+  for (const event of finalizeClaudeStream(state)) {
+    yield new TextEncoder().encode('event: ' + event.type + '\ndata: ' + event.data + '\n\n')
+  }
+  yield new TextEncoder().encode('event: message_stop\ndata: ' + JSON.stringify({ type: 'message_stop' }) + '\n\n')
+}
+
+/** Translate Freebuff/OpenAI error to Anthropic format. */
+function handleFreebuffError(err: unknown, model: string): Response {
+  const e = err as Error
+  const msg = e.message ?? 'Session admission failed'
+  const statusMatch = msg.match(/\[(\w+)\]/)
+  const fbStatus = statusMatch ? statusMatch[1] : 'api_error'
+  const { openAIError, httpStatus } = formatFreebuffError(fbStatus, msg, model)
+  return new Response(JSON.stringify({ error: openAIError }), {
+    status: httpStatus,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function handleFreebuffResponseError(response: Response, model: string): Response {
+  // handled at sync level in caller — this should be async but we'll keep simple
+  return new Response(
+    JSON.stringify({ error: { message: `OpenAI API error: ${response.status}` } }),
+    { status: response.status === 429 ? 429 : response.status >= 500 ? 503 : 400,
+      headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+function openAINonStreamToClaude(json: Record<string, unknown>): Record<string, unknown> {
+  const choices = json.choices as Array<Record<string, unknown>> | undefined
+  if (!choices || choices.length === 0) {
+    return {
+      type: 'content',
+      role: 'assistant',
+      content: [{ type: 'text', text: { value: '' } }],
+      stop_reason: 'end_turn',
+    }
+  }
+
+  const choice = choices[0]
+  const msg = choice.message as Record<string, unknown> | undefined
+  const content: Array<Record<string, unknown>> = []
+
+  if (msg?.content) {
+    content.push({ type: 'text', text: { value: String(msg.content) } })
+  }
+
+  if (msg?.tool_calls && Array.isArray(msg.tool_calls)) {
+    for (const tc of msg.tool_calls) {
+      const tcObj = tc as { function?: { name?: string; arguments?: string } }
+      content.push({
+        type: 'tool_use',
+        id: crypto.randomUUID(),
+        name: tcObj.function?.name,
+        input: tcObj.function?.arguments ? safeJSONParse(tcObj.function.arguments) : {},
+      })
+    }
+  }
+
+  return {
+    type: 'content',
+    role: 'assistant',
+    content,
+    stop_reason: choice.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
+    usage: json.usage,
+  }
+}
+
+function safeJSONParse(s: string): unknown {
+  try { return JSON.parse(s) } catch { return {} }
+}
+
 export async function startRouter(configOverride?: RouterConfig): Promise<ReturnType<typeof serve>> {
   const config = configOverride ?? loadConfig()
   const tokens = resolveFreebuffTokens()
@@ -320,6 +525,10 @@ export async function startRouter(configOverride?: RouterConfig): Promise<Return
 
       if (path === '/v1/responses' || path === '/responses') {
         return handleChat(req, config, pool)
+      }
+
+      if (path === '/v1/messages' || path === '/messages') {
+        return handleClaudeMessages(req, config, pool)
       }
 
       // Deployment-style alias (Azure compat)
