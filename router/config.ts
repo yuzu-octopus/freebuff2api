@@ -84,7 +84,7 @@ export function loadConfig(path = process.env.ROUTER_CONFIG ?? DEFAULT_CONFIG_PA
       `Config not found at ${path}. Copy router.config.example.json to ${path} and fill in your provider keys.`,
     )
   }
-  const raw = JSON.parse(readFileSync(resolved, 'utf8')) as Partial<RouterConfig & { freebuffTokens?: string }>
+  const raw = JSON.parse(readFileSync(resolved, 'utf8')) as Partial<RouterConfig>
   return {
     host: raw.host ?? '127.0.0.1',
     port: raw.port ?? 8787,

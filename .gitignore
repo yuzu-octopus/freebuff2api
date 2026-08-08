@@ -27,11 +27,10 @@ Thumbs.db
 *.swp
 *.swo
 
-# Freebuff protocol reverse-engineering sources
-# Reference materials, not part of the router
+# Freebuff protocol reverse-engineering sources (reference materials, not shipped)
 source/
+PROMPT.md
 
-# Local config (secrets in credentials, config may contain keys)
+# Local config (may contain secrets/keys)
 router.config.json
-
-# Credentials (local) — read at runtime from ~/.config/manicode/credentials.json
+router/router.config.json
