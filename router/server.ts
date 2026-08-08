@@ -150,10 +150,11 @@ async function executeWithLease(
   // 2. Start agent run
   const runId = await client.startRun(instanceId, model)
 
-  // 3. Forward chat
+  // 3. Forward chat — pass tools, tool_choice, temperature, etc.
   const stream = body.stream === true
   const messages = (body.messages as Array<Record<string, unknown>> | undefined)?.map(normalizeMessage) ?? []
-  const response = await client.streamChat(instanceId, model, runId, messages, stream)
+  const { model: _, instanceId: __, ...extra } = body
+  const response = await client.streamChat(instanceId, model, runId, messages, stream, extra)
 
   return { runId, instanceId, response, admitted }
 }

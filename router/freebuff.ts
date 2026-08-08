@@ -20,11 +20,14 @@
  */
 
 import { AGENT_BY_MODEL, AGENT_FALLBACK, DEFAULT_MODEL, resolveFreebuffTokens } from './config'
+import { normalizeTools } from './tools'
 
 export interface Session {
   status: string
   instanceId: string
   model: string
+  position?: number
+  queueDepth?: number
   rateLimit?: { recentCount: number; limit: number; resetAt: string }
   rateLimitsByModel?: Record<string, { recentCount: number; limit: number; resetAt: string }>
   limitedModelOffers?: Array<{
@@ -121,12 +124,37 @@ export class FreebuffTokenClient {
     }
 
     if (body?.status === 'none') return null
+    if (body?.status === 'queued') {
+      // Waiting room: poll position until session is admitted
+      return this.pollQueuedSession(model, body.position, body.queueDepth)
+    }
     if (body?.status === 'active') {
       if (body.model && body.model !== model) return null
       this.instanceId = body.instanceId
       return body
     }
     return null
+  }
+
+  /** Poll session endpoint while in waiting room queue. */
+  private async pollQueuedSession(
+    model: string,
+    position: number,
+    queueDepth: number,
+  ): Promise<Session> {
+    const maxWaitMs = 30_000
+    const intervalMs = 5_000
+    const start = Date.now()
+
+    while (Date.now() - start < maxWaitMs) {
+      await new Promise((r) => setTimeout(r, intervalMs))
+      const session = await this.getSession(model)
+      if (session) {
+        this.instanceId = session.instanceId
+        return session
+      }
+    }
+    throw new Error(`Session wait timed out after ${maxWaitMs / 1000}s (queue depth: ${queueDepth})`)
   }
 
   /** Admit a new session for the model. */
@@ -214,18 +242,24 @@ export class FreebuffTokenClient {
    * Stream chat completions.
    * Sends the OpenAI-compatible body with runId + codebuff_metadata.
    */
-  async streamChat(
+async streamChat(
     instanceId: string,
     model: string,
     runId: string,
     messages: Array<{ role: string; content: string }>,
     stream = true,
+    extra: Record<string, unknown> = {},
   ): Promise<Response> {
+    const { tools, tool_choice, ...rest } = extra
+    const normalizedTools = tools ? normalizeTools(tools) : undefined
     const payload = {
       model,
       messages,
       stream,
       runId,
+      ...rest,
+      ...(normalizedTools ? { tools: normalizedTools } : {}),
+      ...(tool_choice ? { tool_choice } : {}),
       codebuff_metadata: {
         run_id: runId,
         client_id: crypto.randomUUID(),
@@ -251,8 +285,8 @@ export class FreebuffTokenClient {
       const text = await res.text().catch(() => '')
       let hint = ''
       try {
-        const body = JSON.parse(text)
-        if (body.error === 'free_mode_cli_required') {
+        const b = JSON.parse(text)
+        if (b.error === 'free_mode_cli_required') {
           hint = '\n  (Server rejected: free_mode_cli_required. Your token may not be CLI-entitled.)'
         }
       } catch {
@@ -263,7 +297,6 @@ export class FreebuffTokenClient {
 
     return res
   }
-
   /** Returns true if the run needs rotation (older than 5.5h). */
   needsRunRotation(): boolean {
     return Date.now() - this.runStartedAt > RUN_ROTATION_INTERVAL_MS
