@@ -101,7 +101,7 @@ function startMockFreebuff(): Promise<{ server: MockServer; url: string }> {
 }
 
 async function main() {
-  process.env.ROUTER_TOKEN = VALID_TOKEN
+  process.env.FREEBUFF_TOKEN = VALID_TOKEN
 
   console.log('[smoke] starting mock Freebuff server...')
   const mock = await startMockFreebuff()

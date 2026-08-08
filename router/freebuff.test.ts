@@ -318,15 +318,15 @@ describe('FreebuffTokenPool', () => {
 })
 
 describe('resolveFreebuffTokens', () => {
-  it('reads comma-separated tokens from ROUTER_TOKEN env', () => {
-    const original = process.env.ROUTER_TOKEN
-    process.env.ROUTER_TOKEN = 'token-a,token-b,token-c'
+  it('reads comma-separated tokens from FREEBUFF_TOKEN env', () => {
+    const original = process.env.FREEBUFF_TOKEN
+    process.env.FREEBUFF_TOKEN = 'token-a,token-b,token-c'
     try {
       const tokens = resolveFreebuffTokens()
       expect(tokens).toEqual(['token-a', 'token-b', 'token-c'])
     } finally {
-      if (original === undefined) delete process.env.ROUTER_TOKEN
-      else process.env.ROUTER_TOKEN = original
+      if (original === undefined) delete process.env.FREEBUFF_TOKEN
+      else process.env.FREEBUFF_TOKEN = original
     }
   })
 })

@@ -27,7 +27,7 @@ body = "`/v1/chat/completions` and `/v1/responses` (Responses API → chat forma
 
 [[sections.items]]
 title = "Multi-Token Concurrency"
-body = "Each Freebuff account has a single global active session per model. The router reads comma-separated tokens from `ROUTER_TOKEN` and maintains an idle-slot pool — each token is an independent session slot for parallel request handling."
+body = "Each Freebuff account has a single global active session per model. The router reads comma-separated tokens from `FREEBUFF_TOKEN` and maintains an idle-slot pool — each token is an independent session slot for parallel request handling."
 
 [[sections.items]]
 title = "Session Affinity"
@@ -59,18 +59,36 @@ body = """
 The router runs entirely locally — no external services, no telemetry, no data leaving your machine except Freebuff API calls.
 </div>
 
-```
-Agent (OpenAI /v1/chat/completions)
-  │  user-agent: ai-sdk/openai-compatible/.../codebuff
-  ▼
-localhost:8787/v1/chat/completions
-  │
-  ├─ Pool.acquire(model)  → pick idle Freebuff token (session affinity)
-  ├─ POST /api/v1/freebuff/session    (admit if no active session)
-  ├─ POST /api/v1/agent-runs (START)  → runId
-  ├─ POST /api/v1/chat/completions    (stream back SSE)
-  └─ release → finish run + release session
-```
+<div class="flow-diagram">
+  <div class="flow-node">
+    <strong>Agent</strong>
+    <div class="flow-sub">OpenAI /v1/chat/completions</div>
+    <div class="flow-sub">user-agent: ai-sdk/openai-compatible/.../codebuff</div>
+  </div>
+  <div class="flow-arrow">▼</div>
+  <div class="flow-node">
+    <strong>localhost:8787</strong>
+    <div class="flow-sub">Pool.acquire(model) → idle Freebuff token</div>
+  </div>
+  <div class="flow-arrow">▼</div>
+  <div class="flow-steps">
+    <div class="flow-step">POST /api/v1/freebuff/session (admit if needed)</div>
+    <div class="flow-step">POST /api/v1/agent-runs START → runId</div>
+    <div class="flow-step">POST /api/v1/chat/completions (stream SSE)</div>
+    <div class="flow-step">release → finish run + release session</div>
+  </div>
+</div>
+
+<style>
+.flow-diagram { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 16px 0; }
+.flow-node { background: var(--panel); border: 1px solid var(--muted); border-radius: 8px; padding: 12px 20px; text-align: center; min-width: 200px; }
+.flow-node strong { color: var(--purple); }
+.flow-sub { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+.flow-arrow { color: var(--muted); font-size: 1.5rem; }
+.flow-steps { background: var(--panel); border-radius: 8px; padding: 12px 20px; text-align: left; }
+.flow-step { padding: 4px 0; border-bottom: 1px solid var(--muted); font-size: 0.85rem; }
+.flow-step:last-child { border-bottom: none; }
+</style>
 
 <div class="callout callout-warning">
 <strong>Important:</strong> Free mode chat is gated server-side to the official Freebuff CLI.
@@ -87,12 +105,10 @@ icon = "play"
 language = "bash"
 code = """
 # 1. Get your Freebuff token
-export ROUTER_TOKEN=your_token_here
+export FREEBUFF_TOKEN=your_token_here
 
 # For concurrency (optional):
-# export ROUTER_TOKEN=token_a,token_b,token_c
-
-# 2. Start the router
+# export FREEBUFF_TOKEN=token_a,token_b,token_c
 bun dev
 
 # 3. Point your agent at http://localhost:8787/v1
@@ -139,9 +155,6 @@ cells = ["`openai/gpt-5.6-luna`", "GPT-5.6 Luna", "6/day", "Premium"]
 [[sections.rows]]
 cells = ["`z-ai/glm-5.2`", "GLM 5.2", "referral-gated", "Referral"]
 
-[[sections.rows]]
-cells = ["`anthropic/claude-fable-5`", "Claude Fable 5", "limited", "Limited offer"]
-
 [[sections]]
 id = "testing"
 type = "steps"
@@ -177,7 +190,7 @@ description = "Free tier of Codebuff — upstream LLM service"
 [[sections]]
 id = "comparison"
 type = "table"
-title = "Comparison with Other Implementations"
+title = "Comparison"
 icon = "chip"
 headers = ["Feature", "freebuff2api (this)", "Quorinex (Go)", "v2 Timcuan", "kele68108"]
 
@@ -197,16 +210,16 @@ cells = ["Run rotation", "5.5h (config)", "Configurable interval", "Not specifie
 cells = ["Waiting room", "Promise-based waiter", "Queue position polling", "Strategy-based", "Stale-witness detection"]
 
 [[sections.rows]]
-cells = ["Session queuing", "No (waits)", "Yes (polls position)", "Least-loaded strategy", "Optimistic reuse window"]
+cells = ["Session queuing", "Yes (5s polling, 30s timeout)", "Yes (polls position)", "Least-loaded strategy", "Optimistic reuse 30s"]
 
 [[sections.rows]]
 cells = ["Error recovery", "Format Freebuff errors to OpenAI", "Session invalidation on conflict (409)", "Error hierarchy + retries", "Stale witness + session invalidation"]
 
 [[sections.rows]]
-cells = ["Claude support", "No", "Yes (/v1/messages)", "No", "No"]
+cells = ["Claude / Anthropic support", "Yes (/v1/messages)", "Yes (/v1/messages)", "No", "No"]
 
 [[sections.rows]]
-cells = ["Tool schema normalization", "No", "Yes (LobeChat compat)", "No", "No"]
+cells = ["Tool schema normalization", "Yes ($ref + nullable)", "Yes (LobeChat compat)", "No", "No"]
 
 [[sections.rows]]
 cells = ["Web UI / admin panel", "No", "No", "No", "Yes (Vue3 + SSE logs)"]

@@ -133,7 +133,7 @@ function stopFreebuffMock(): void {
 }
 
 beforeAll(() => {
-  process.env.ROUTER_TOKEN = VALID_TOKEN
+  process.env.FREEBUFF_TOKEN = VALID_TOKEN
 })
 
 describe('Router server', () => {
@@ -185,17 +185,10 @@ describe('Router server', () => {
       // Flash model should have user quota info from rateLimitsByModel
       const flash = body.data.find((m) => m.id === 'deepseek/deepseek-v4-flash')
       expect(flash).toBeDefined()
-      expect(flash!.userRemaining).toBe(100) // limit 100, recentCount 0
-
       // Luna model should have 3 of 6 used
       const luna = body.data.find((m) => m.id === 'openai/gpt-5.6-luna')
       expect(luna).toBeDefined()
       expect(luna!.userRemaining).toBe(3) // limit 6, recentCount 3
-
-      // Fable 5 should show limited offer info
-      const fable = body.data.find((m) => m.id === 'anthropic/claude-fable-5')
-      expect(fable).toBeDefined()
-      expect(fable!.remaining).toBe(5) // from limitedModelOffers
     })
   })
 

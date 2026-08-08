@@ -28,8 +28,13 @@ an idle-slot pool so concurrent requests each get their own token.
 
 - **OpenAI-compatible surface** — `/v1/chat/completions` and `/v1/responses`
   (translated from Responses API to chat format)
-- **Multi-token concurrency** — comma-separated `ROUTER_TOKEN` env var; each
+- **Anthropic-compatible surface** — `/v1/messages` endpoint with full SSE
+  streaming translation (Claude Code compatible)
+- **Multi-token concurrency** — comma-separated `FREEBUFF_TOKEN` env var; each
   token is an independent session slot
+- **Session queuing** — polls waiting-room queue every 5s (up to 30s timeout)
+- **Tool schema normalization** — resolves `$ref` and nullable type combinators
+  for broad client compatibility
 - **Session affinity** — reuses a token that already has an active session for
   the requested model (preserves Freebuff's context cache, avoids churn)
 - **Run rotation** — rotates agent runs every 5.5h to stay under Freebuff's
@@ -39,7 +44,6 @@ an idle-slot pool so concurrent requests each get their own token.
 - **CLI identity spoofing** — user-agent and `codebuff_metadata.cost_mode: 'free'`
   bypass the `free_mode_cli_required` gate
 - **Auth gating** — optional `routerKey` protects the `/v1/*` surface
-
 ## Install
 
 ```bash
@@ -47,13 +51,12 @@ bun install
 ```
 
 ## Configuration
-
 ### Quick start
 
 1. Export your Freebuff token:
 
 ```bash
-export ROUTER_TOKEN=your_token_here
+export FREEBUFF_TOKEN=your_token_here
 ```
 
 2. Start the router:
@@ -67,7 +70,7 @@ bun dev
 ### Multi-token (concurrency)
 
 ```bash
-export ROUTER_TOKEN=token_a,token_b,token_c
+export FREEBUFF_TOKEN=token_a,token_b,token_c
 bun dev
 ```
 

@@ -70,7 +70,7 @@ describe('config', () => {
   })
 
   it('exposes model catalog for /v1/models', () => {
-    expect(MODEL_CATALOG.length).toBe(7)
+    expect(MODEL_CATALOG.length).toBe(6)
     expect(MODEL_CATALOG[0].id).toBe('deepseek/deepseek-v4-flash')
     expect(MODEL_CATALOG[0].quota).toBe('unlimited')
   })
