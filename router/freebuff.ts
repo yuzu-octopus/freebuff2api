@@ -21,6 +21,7 @@
 
 import { AGENT_BY_MODEL, AGENT_FALLBACK, DEFAULT_MODEL, resolveFreebuffTokens } from './config'
 import { normalizeTools } from './tools'
+import { ensureFreeMarker } from './prompt'
 
 export interface Session {
   status: string
@@ -40,10 +41,10 @@ export interface Session {
 }
 
 
-// Wire header the SDK uses (see PROTOCOL.md line 84).
-// Chat requests use the browser runtime variant to identify as the
-// ai-sdk OpenAI-compatible provider running in browser context.
-export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.0.0-test/codebuff ai-sdk/provider-utils/3.0.20 runtime/browser'
+// Wire header the real SDK sends on chat + agent-runs (model-provider.ts):
+// `ai-sdk/openai-compatible/${VERSION}/codebuff`. No runtime/browser suffix —
+// that variant identifies a browser client, and the free-mode gate rejects it.
+export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.0.0-test/codebuff'
 
 // Freebuff sessions expire after ~6 hours; rotate runs before then.
 const RUN_ROTATION_INTERVAL_MS = 5.5 * 60 * 60 * 1000
@@ -56,6 +57,8 @@ export class FreebuffTokenClient {
   private runStartedAt: number = 0
   private busy: boolean = false
   private sessionModel: string | null = null
+  private userId: string | null | undefined = undefined
+  private userIdFetching: Promise<string | null> | null = null
 
   constructor(token: string, apiHost: string) {
     this.token = token
@@ -80,6 +83,41 @@ export class FreebuffTokenClient {
 
   private get chatUrl(): string {
     return `${this.apiHost}/api/v1/chat/completions`
+  }
+
+  private get meUrl(): string {
+    return `${this.apiHost}/api/v1/me?fields=id`
+  }
+
+  /**
+   * Resolve the account's user id (GET /api/v1/me?fields=id), as the SDK
+   * does before every run. The id is sent as x-freebuff-acting-user-id on
+   * agent-runs and chat; without it those requests lack the CLI identity the
+   * free-mode gate checks. Cached per token; failures fall back to omitting
+   * the header (the SDK tolerates a missing userId the same way).
+   */
+  resolveUserId(): Promise<string | null> {
+    if (this.userId !== undefined) return Promise.resolve(this.userId)
+    if (this.userIdFetching) return this.userIdFetching
+    this.userIdFetching = (async () => {
+      try {
+        const res = await fetch(this.meUrl, {
+          headers: { Authorization: `Bearer ${this.token}` },
+        })
+        if (!res.ok) return (this.userId = null)
+        const body = await res.json().catch(() => null)
+        return (this.userId =
+          typeof body?.id === 'string' && body.id ? body.id : null)
+      } catch {
+        return (this.userId = null)
+      }
+    })()
+    return this.userIdFetching
+  }
+
+  private async actingUserHeaders(): Promise<Record<string, string>> {
+    const id = await this.resolveUserId()
+    return id ? { 'x-freebuff-acting-user-id': id } : {}
   }
 
   private authHeaders(): Record<string, string> {
@@ -214,7 +252,10 @@ export class FreebuffTokenClient {
     const agentId = AGENT_BY_MODEL[model] ?? AGENT_FALLBACK
     const res = await fetch(this.runsUrl, {
       method: 'POST',
-      headers: this.authHeaders(),
+      headers: {
+        ...this.authHeaders(),
+        ...(await this.actingUserHeaders()),
+      },
       body: JSON.stringify({ action: 'START', agentId }),
     })
 
@@ -238,7 +279,10 @@ export class FreebuffTokenClient {
     try {
       await fetch(this.runsUrl, {
         method: 'POST',
-        headers: this.authHeaders(),
+        headers: {
+          ...this.authHeaders(),
+          ...(await this.actingUserHeaders()),
+        },
         body: JSON.stringify({
           action: 'FINISH',
           runId,
@@ -267,17 +311,24 @@ async streamChat(
   ): Promise<Response> {
     const { tools, tool_choice, ...rest } = extra
     const normalizedTools = tools ? normalizeTools(tools) : undefined
+    const agentName = AGENT_BY_MODEL[model] ?? AGENT_FALLBACK
+    // The free-mode chat gate requires the first system message to open with
+    // the "You are Buffy" marker. Inject marker+override like XxxTeam's
+    // freebuff2api (prefix the first system message, or insert one at index 0
+    // when absent), deduping when the caller already carries the marker.
+    const chatMessages = ensureFreeMarker(messages as Array<{ role: string; content: unknown }>)
     const payload = {
       model,
-      messages,
+      ...rest,
+      messages: chatMessages,
       stream,
       runId,
-      ...rest,
       ...(normalizedTools ? { tools: normalizedTools } : {}),
       ...(tool_choice ? { tool_choice } : {}),
       codebuff_metadata: {
         run_id: runId,
         client_id: crypto.randomUUID(),
+        n: agentName,
         cost_mode: 'free',
         freebuff_instance_id: instanceId,
       },
@@ -285,6 +336,7 @@ async streamChat(
 
     const headers: Record<string, string> = {
       ...this.authHeaders(),
+      ...(await this.actingUserHeaders()),
       'Content-Type': 'application/json',
       'x-freebuff-model': model,
       Accept: stream ? 'text/event-stream' : 'application/json',
@@ -302,7 +354,7 @@ async streamChat(
       try {
         const b = JSON.parse(text)
         if (b.error === 'free_mode_cli_required') {
-          hint = '\n  (Server rejected: free_mode_cli_required. Your token may not be CLI-entitled.)'
+          hint = '\n  (Server rejected: free_mode_cli_required — request not recognised as the CLI. Ensure the first message is the "You are Buffy" system prompt and CLI user-agent is set.)'
         }
       } catch {
         /* non-JSON */
