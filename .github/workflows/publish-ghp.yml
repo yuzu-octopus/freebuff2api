@@ -1,0 +1,41 @@
+name: Publish GitHub Packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@yuzu-octopus"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile || true
+
+      - name: Test
+        run: bun test router/
+
+      # GitHub Packages only supports scoped names. Keep npmjs canonical
+      # (unscoped `freebuff2api`); the name is rewritten just for this
+      # registry, mirroring the mcp-pool publish setup. setup-node already
+      # wrote the auth token from GITHUB_TOKEN.
+      - name: Publish to GitHub Packages
+        run: |
+          npm pkg set name=@yuzu-octopus/freebuff2api
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

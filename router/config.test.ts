@@ -47,14 +47,21 @@ describe('config', () => {
       port: 8080,
     }))
 
-    const config = loadConfig(noFreebuffConfig)
-    expect(config.host).toBe('127.0.0.1')
-    expect(config.port).toBe(8080)
-    expect(config.routerKey).toBeUndefined()
-    expect(config.freebuff.apiHost).toBe(DEFAULT_FREEBUFF.apiHost)
-    expect(config.freebuff.loginHost).toBe(DEFAULT_FREEBUFF.loginHost)
-
-    fs.unlinkSync(noFreebuffConfig)
+    // loadConfig falls back to FREEBUFF_TOKEN for routerKey; keep the env out
+    // of this assertion so CI (which may set it) can't break the test.
+    const savedToken = process.env.FREEBUFF_TOKEN
+    delete process.env.FREEBUFF_TOKEN
+    try {
+      const config = loadConfig(noFreebuffConfig)
+      expect(config.host).toBe('127.0.0.1')
+      expect(config.port).toBe(8080)
+      expect(config.routerKey).toBeUndefined()
+      expect(config.freebuff.apiHost).toBe(DEFAULT_FREEBUFF.apiHost)
+      expect(config.freebuff.loginHost).toBe(DEFAULT_FREEBUFF.loginHost)
+    } finally {
+      if (savedToken !== undefined) process.env.FREEBUFF_TOKEN = savedToken
+      fs.unlinkSync(noFreebuffConfig)
+    }
   })
 
   it('throws if config file missing', () => {
