@@ -24,7 +24,8 @@
     "!router/smoke-test.ts",
     "!router/node_modules/**",
     "router.config.example.json",
-    "README.md"
+    "README.md",
+    "LICENSE.md"
   ],
   "scripts": {
     "start": "bun bin/freebuff2api.js"
