@@ -37,8 +37,9 @@ an idle-slot pool so concurrent requests each get their own token.
   for broad client compatibility
 - **Session affinity** — reuses a token that already has an active session for
   the requested model (preserves Freebuff's context cache, avoids churn)
-- **Run rotation** — rotates agent runs every 5.5h to stay under Freebuff's
-  ~6-hour session expiry
+- **Session resilience** — fresh run per request; expired or superseded
+  sessions (Freebuff's ~6-hour expiry) are detected on the next request and
+  re-admitted automatically
 - **Live model enrichment** — `/v1/models` augments the static catalog with
   real-time `rateLimitsByModel` and `limitedModelOffers` from Freebuff
 - **CLI identity spoofing** — user-agent and `codebuff_metadata.cost_mode: 'free'`
@@ -102,9 +103,19 @@ cp router.config.example.json router.config.json
 ### Router auth key
 
 `routerKey` comes from the config file or the `ROUTER_KEY` env var — it is
-independent of `FREEBUFF_TOKEN`. If set, all `/v1/*` routes require
-`Authorization: Bearer <routerKey>`. If unset (null/absent), the router is
-open locally.
+independent of `FREEBUFF_TOKEN`. If set, every route except `/health`
+(including the non-`/v1` alias routes) requires `Authorization: Bearer
+<routerKey>`. If unset (null/absent), the router is open locally.
+
+### Rate limits
+
+Free-tier model quotas (e.g. the `6/day` premium models) are enforced
+server-side. The router does not pre-block requests: it surfaces live
+remaining quotas via `/v1/models` (`userRemaining`) and auto-fails over to
+the next token when a token's tool-quota bucket is exhausted (a `429` naming
+`high-balance`), rather than failing fast. Other `429`s are relayed as-is.
+Add more tokens to `FREEBUFF_TOKEN` to raise concurrency and spread quota
+across accounts.
 
 ## Testing
 
@@ -116,20 +127,17 @@ bun test
 bun test router/
 
 # End-to-end smoke test (starts a mock Freebuff backend)
-bun smoke
+bun router/smoke-test.ts
 ```
 
 ## API surface
 
 ### `GET /health`
 
-Health check. Returns `{ "status": "ok", "tokens": <N> }`.
-
-### `GET /health`
-
 Health check. Returns `{ "status": "ok", "tokens": <N> }`. With
 `?verbose=1` also returns `tokensDetail` (per-token masked snapshot: `token`,
 `busy`, `sessionModel`, `toolQuotaExhausted`) and the daily `streak`.
+No auth required (safe for orchestrator probes).
 
 ### `GET /v1/streak`
 
@@ -153,7 +161,11 @@ Standard OpenAI-compatible request body (supports `stream: true` for SSE).
 
 ### `POST /v1/responses`
 
-OpenAI Responses API — translated to chat format internally.
+OpenAI Responses API — `input`/`instructions` bodies are translated to chat
+format internally. **Limitation:** the response is relayed in chat-completions
+shape (`choices[].message`), not native Responses `output` format; use
+`/v1/chat/completions` or `/v1/messages` for harnesses that need strict
+schema compliance.
 
 ### `POST /v1/messages`
 

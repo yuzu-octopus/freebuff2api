@@ -79,9 +79,15 @@ export const MODEL_CATALOG: FreebuffModelOption[] = [
 export function loadConfig(path = process.env.ROUTER_CONFIG ?? DEFAULT_CONFIG_PATH): RouterConfig {
   const resolved = resolve(path)
   if (!existsSync(resolved)) {
-    throw new Error(
-      `Config not found at ${path}. Copy router.config.example.json to ${path} and fill in your provider keys.`,
-    )
+    // No config file (e.g. fresh `bunx freebuff2api` without a local copy) —
+    // fall back to defaults. FREEBUFF_TOKEN / ROUTER_KEY env vars still apply,
+    // and the token pool rejects an empty token list at startup.
+    return {
+      host: '127.0.0.1',
+      port: 8787,
+      routerKey: process.env.ROUTER_KEY,
+      freebuff: { ...DEFAULT_FREEBUFF },
+    }
   }
   const raw = JSON.parse(readFileSync(resolved, 'utf8')) as Partial<RouterConfig>
   return {

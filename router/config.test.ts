@@ -113,10 +113,19 @@ describe('config', () => {
     }
   })
 
-  it('throws if config file missing', () => {
-    expect(() => loadConfig(path.join(import.meta.dirname, 'nonexistent.config.json'))).toThrow(
-      /Config not found/,
-    )
+  it('falls back to defaults when config file missing (env-driven setup)', () => {
+    const saved = process.env.ROUTER_KEY
+    process.env.ROUTER_KEY = 'env-key'
+    try {
+      const config = loadConfig(path.join(import.meta.dirname, 'nonexistent.config.json'))
+      expect(config.host).toBe('127.0.0.1')
+      expect(config.port).toBe(8787)
+      expect(config.routerKey).toBe('env-key')
+      expect(config.freebuff).toEqual(DEFAULT_FREEBUFF)
+    } finally {
+      if (saved === undefined) delete process.env.ROUTER_KEY
+      else process.env.ROUTER_KEY = saved
+    }
   })
 
   it('resolves model id to agent id', () => {

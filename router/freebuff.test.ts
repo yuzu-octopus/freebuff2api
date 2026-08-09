@@ -492,6 +492,30 @@ describe('FreebuffTokenPool', () => {
     }
   })
 
+  it('wakes a waiting acquirer when the only token\'s cooldown expires', async () => {
+    // Single-token pool: after the token is quarantined, acquire() must not
+    // hang forever — it should return the token once the cooldown passes.
+    // This is the pool-deadlock regression: previously no release() ever
+    // fired for a quarantined token, so waiters parked indefinitely.
+    const pool = new FreebuffTokenPool(baseUrl, [VALID_TOKEN])
+    const first = await pool.acquire('deepseek/deepseek-v4-flash')
+    first.markToolQuotaExhausted(150) // quarantined for 150ms
+    pool.release(first) // no future release will come — it's quarantined
+
+    const started = Date.now()
+    const client = await pool.acquire('deepseek/deepseek-v4-flash')
+    const elapsed = Date.now() - started
+
+    try {
+      expect(client).toBe(first)
+      expect(client.isToolQuotaExhausted()).toBe(false)
+      // Woken by the cooldown timer, not by a release (150ms + slack).
+      expect(elapsed).toBeGreaterThanOrEqual(100)
+    } finally {
+      pool.release(client)
+    }
+  })
+
   it('masks tokens in pool snapshot (tokenLabel)', async () => {
     const pool = new FreebuffTokenPool(baseUrl, ['1234567890abcd', '12345678'])
     const snap = pool.snapshot()

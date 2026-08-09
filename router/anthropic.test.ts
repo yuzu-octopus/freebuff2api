@@ -60,14 +60,32 @@ describe('openAIChunkToClaudeEvents', () => {
         choices: [{ index: 0, delta: { content: 'Hi' } }],
       },
       state,
-      0,
-      0,
     )
 
     const textDelta = events.find((e) => e.type === 'content_block_delta')
     const data = JSON.parse(textDelta!.data) as { text: unknown }
     expect(data.text).toBe('Hi')
     expect(typeof data.text).toBe('string')
+  })
+
+  it('emits content_block_start once before the first text delta', () => {
+    const state = initAnthropicStreamState()
+    const first = openAIChunkToClaudeEvents(
+      { choices: [{ index: 0, delta: { content: 'Hel' } }] },
+      state,
+    )
+    const start = first.find((e) => e.type === 'content_block_start')
+    expect(start).toBeDefined()
+    expect(start!.index).toBe('0')
+    const block = JSON.parse(start!.data) as { content_block: { type: string } }
+    expect(block.content_block.type).toBe('text')
+
+    // Second delta must not re-emit the block start.
+    const second = openAIChunkToClaudeEvents(
+      { choices: [{ index: 0, delta: { content: 'lo' } }] },
+      state,
+    )
+    expect(second.some((e) => e.type === 'content_block_start')).toBe(false)
   })
 })
 
@@ -95,8 +113,6 @@ describe('finalizeClaudeStream', () => {
         choices: [{ index: 0, delta: { content: 'Hi' }, finish_reason: 'stop' }],
       },
       state,
-      0,
-      0,
     )
     expect(events.some((e) => e.type === 'message_stop')).toBe(false)
   })

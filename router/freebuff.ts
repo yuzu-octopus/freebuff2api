@@ -9,12 +9,13 @@
  * Supports multiple Freebuff tokens via a token pool for concurrency:
  * each account has a single global active session, so multiple tokens
  * = multiple independent session slots = parallel request handling.
- * Run rotation (~6 hours) prevents session expiry on long-lived connections.
+ * Sessions expire server-side after ~6h; getSession treats 410/409-stale
+ * as dead and re-admits a fresh session automatically.
  *
  * Flow per request:
  *   1. Acquire an idle token from the pool.
  *   2. Reuse active session (GET /session) or admit a new one (POST /session).
- *   3. Start agent run (POST /agent-runs START → runId, rotate if >6h old).
+ *   3. Start agent run (POST /agent-runs START → runId, fresh per request).
  *   4. Stream chat (POST /chat/completions with runId + codebuff_metadata).
  *   5. Release token back to the pool (best-effort FINISH + session release).
  */
@@ -46,21 +47,17 @@ export interface Session {
 // that variant identifies a browser client, and the free-mode gate rejects it.
 export const CLI_USER_AGENT = 'ai-sdk/openai-compatible/0.0.0-test/codebuff'
 
-// Freebuff sessions expire after ~6 hours; rotate runs before then.
-const RUN_ROTATION_INTERVAL_MS = 5.5 * 60 * 60 * 1000
-
 export class FreebuffTokenClient {
   readonly token: string
   private apiHost: string
   private instanceId: string | null = null
   private runId: string | null = null
-  private runStartedAt: number = 0
   private busy: boolean = false
   private sessionModel: string | null = null
   private userId: string | null | undefined = undefined
   private userIdFetching: Promise<string | null> | null = null
   /** MS epoch until this token's tool-quota bucket is expected to free up. */
-  private quotaExhaustedUntil: number = 0
+  private quotaCooldownUntil: number = 0
 
   constructor(token: string, apiHost: string) {
     this.token = token
@@ -159,9 +156,12 @@ export class FreebuffTokenClient {
     const body = await res.json().catch(() => null)
 
     if (!res.ok) {
-      // 409 model_locked: existing session is bound to a different model.
-      // Invalidate our cached instanceId so the next GET starts fresh.
-      if (res.status === 409) {
+      // Stale or displaced session: 409 model_locked (bound to a different
+      // model), 410 session_expired (the ~6h session expired), 409
+      // session_superseded / session_model_mismatch (another client rotated
+      // or the model tier changed). All mean "our cached session is dead" —
+      // invalidate and let tryLeaseClient admit a fresh one.
+      if (res.status === 409 || res.status === 410) {
         this.invalidateSession()
         return null
       }
@@ -271,7 +271,6 @@ export class FreebuffTokenClient {
       throw new Error(`startRun returned no runId: ${JSON.stringify(body)}`)
     }
     this.runId = body.runId
-    this.runStartedAt = Date.now()
     return this.runId
   }
 
@@ -366,11 +365,6 @@ async streamChat(
 
     return res
   }
-  /** Returns true if the run needs rotation (older than 5.5h). */
-  needsRunRotation(): boolean {
-    return Date.now() - this.runStartedAt > RUN_ROTATION_INTERVAL_MS
-  }
-
   /** Returns the model this token currently has an active session for, if any. */
   getSessionModel(): string | null {
     return this.sessionModel
@@ -382,12 +376,17 @@ async streamChat(
    * instead of rehitting the same 429.
    */
   markToolQuotaExhausted(cooldownMs: number): void {
-    this.quotaExhaustedUntil = Date.now() + cooldownMs
+    this.quotaCooldownUntil = Date.now() + cooldownMs
   }
 
   /** True while this token is in its tool-quota cooldown window. */
   isToolQuotaExhausted(): boolean {
-    return Date.now() < this.quotaExhaustedUntil
+    return Date.now() < this.quotaCooldownUntil
+  }
+
+  /** MS epoch when this token's tool-quota cooldown clears. */
+  quotaCooldownEndsAt(): number {
+    return this.quotaCooldownUntil
   }
 
   /** Daily free streak (quota/streak status surface). */
@@ -465,10 +464,20 @@ export class FreebuffTokenPool {
         client.setBusy(true)
         return client
       }
-      // All busy — wait for a release
+      // All busy (or all tool-quota-quarantined) — wait for a release. If
+      // every idle token is quarantined, no release() will ever come (the
+      // request that triggered the quarantine already threw), so also wake
+      // when the earliest cooldown expires. Without this, a single-token
+      // router hangs forever after one tool-quota 429 instead of retrying
+      // after the 15-minute cooldown.
       const { promise, resolve } = Promise.withResolvers<void>()
       this.waiters.push(resolve)
+      const earliestClear = this.earliestQuotaClear()
+      const timer = earliestClear === null
+        ? null
+        : setTimeout(resolve, Math.max(0, earliestClear - Date.now()))
       await promise
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -477,6 +486,18 @@ export class FreebuffTokenPool {
     client.setBusy(false)
     const waiter = this.waiters.shift()
     if (waiter) waiter()
+  }
+
+  /** Earliest MS epoch at which a quarantined idle token's cooldown clears. */
+  private earliestQuotaClear(): number | null {
+    let earliest: number | null = null
+    for (const c of this.clients) {
+      if (!c.isBusy && c.isToolQuotaExhausted()) {
+        const until = c.quotaCooldownEndsAt()
+        if (earliest === null || until < earliest) earliest = until
+      }
+    }
+    return earliest
   }
 
   private pickIdle(): FreebuffTokenClient | null {

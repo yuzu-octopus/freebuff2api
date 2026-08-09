@@ -201,7 +201,8 @@ async function tryLeaseClient(
   }
   const instanceId = session.instanceId
 
-  // 2. Start agent run
+  // 2. Start agent run (fresh run per request — the server expires runs
+  // with the ~6h session, which getSession re-admits on 410/404 below).
   const runId = await client.startRun(instanceId, model)
 
   // 3. Forward chat — pass tools, tool_choice, temperature, etc.
@@ -291,40 +292,79 @@ async function handleChat(
     const { openAIError, httpStatus } = formatFreebuffError(status, message, modelId)
     void result.cleanup()
     return new Response(JSON.stringify({ error: openAIError }), {
-      status: response.status === 429 ? 429 : response.status >= 500 ? 503 : 400,
+      status: httpStatus,
       headers: { 'Content-Type': 'application/json' },
     })
   }
 
   if (!chatBody.stream) {
-    // Non-streaming: consume upstream JSON, then clean up
-    const json = await response.json()
-    void result.cleanup()
-    return new Response(JSON.stringify(json), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    // Non-streaming: consume upstream JSON, then clean up. cleanup() must run
+    // even when the body is malformed — a leaked lease wedges the pool forever.
+    try {
+      const json = await response.json()
+      return new Response(JSON.stringify(json), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } finally {
+      void result.cleanup()
+    }
   }
 
-  // Streaming: relay the upstream SSE stream, running cleanup when the
-  // client finishes reading. A TransformStream lets us run cleanup code
-  // after the last byte passes through to the client.
-  const transform = new TransformStream({
-    async transform(chunk, controller) {
-      controller.enqueue(chunk)
-    },
-    async flush(controller) {
-      controller.terminate()
-      void result.cleanup().catch(() => {})
-    },
-  })
+  // Streaming: relay the upstream SSE stream, running cleanup on every exit
+  // path. flush() alone is not enough — TransformStream.flush is skipped when
+  // the source errors, and a client disconnect cancels the stream entirely;
+  // both would leak the lease (token stuck busy, pool wedged).
+  const relay = withCleanup(response.body, () => result.cleanup())
 
-  return new Response(response.body?.pipeThrough(transform), {
+  return new Response(relay, {
     status: 200,
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+    },
+  })
+}
+
+/**
+ * Wrap an upstream body so `cleanup` runs exactly once on every terminal
+ * path: clean end, upstream error, and client cancel. A plain
+ * TransformStream.flush misses error+cancel — those leak the lease.
+ */
+function withCleanup(
+  body: ReadableStream<Uint8Array> | null,
+  cleanup: () => Promise<void>,
+): ReadableStream<Uint8Array> {
+  const reader = body?.getReader()
+  let cleaned = false
+  const once = () => {
+    if (cleaned) return
+    cleaned = true
+    void cleanup().catch(() => {})
+  }
+  if (!reader) {
+    once()
+    return new ReadableStream({ start(c) { c.close() } })
+  }
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          once()
+          controller.close()
+        } else {
+          controller.enqueue(value)
+        }
+      } catch (err) {
+        once()
+        controller.error(err)
+      }
+    },
+    cancel() {
+      once()
+      reader.releaseLock()
     },
   })
 }
@@ -380,17 +420,20 @@ async function handleClaudeMessages(
   }
 
   if (!stream) {
-    const json = await response.json() as Record<string, unknown>
-    void result.cleanup()
-    return new Response(JSON.stringify(openAINonStreamToClaude(json)), {
-      headers: { 'Content-Type': 'application/json' },
-    })
+    try {
+      const json = await response.json() as Record<string, unknown>
+      return new Response(JSON.stringify(openAINonStreamToClaude(json)), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } finally {
+      void result.cleanup()
+    }
   }
 
-  // Cleanup when stream ends
-  void result.cleanup()
-  // Streaming: translate OpenAI SSE → Anthropic SSE
-  const sseStream = openAIToClaudeSSE(response.body!)
+  // Streaming: translate OpenAI SSE → Anthropic SSE. cleanup runs inside the
+  // generator's finally, after the last event is yielded (or on early
+  // termination/error) — never before the stream is consumed.
+  const sseStream = openAIToClaudeSSE(response.body!, () => result.cleanup())
   return new Response(sseStream, {
     headers: {
       'Content-Type': 'text/event-stream',
@@ -404,57 +447,68 @@ async function handleClaudeMessages(
  * Convert an OpenAI SSE stream to Anthropic SSE events.
  * Yields Anthropic-format SSE lines as Uint8Array chunks.
  */
-async function* openAIToClaudeSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+async function* openAIToClaudeSSE(
+  body: ReadableStream<Uint8Array>,
+  onDone?: () => Promise<void>,
+): AsyncGenerator<Uint8Array> {
   const reader = body.getReader()
-
-  // Send initial message_start event
-  yield new TextEncoder().encode('event: message_start\ndata: ' + JSON.stringify({
-    type: 'message_start',
-    message: {
-      id: crypto.randomUUID(),
-      type: 'message',
-      role: 'assistant',
-      model: '',
-      content: [],
-      usage: { input_tokens: 0, output_tokens: 0 },
-    },
-  }) + '\n\n')
-
-  const state = initAnthropicStreamState()
-  let contentBlockIndex = 0
-  let toolBlockIndex = 0
+  let lineBuffer = ''
 
   try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+    // Send initial message_start event
+    yield new TextEncoder().encode('event: message_start\ndata: ' + JSON.stringify({
+      type: 'message_start',
+      message: {
+        id: crypto.randomUUID(),
+        type: 'message',
+        role: 'assistant',
+        model: '',
+        content: [],
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    }) + '\n\n')
 
-      const text = new TextDecoder().decode(value)
-      for (const line of text.split('\n')) {
-        if (!line.startsWith('data:')) continue
-        const data = line.slice(5).trim()
-        if (data === '[DONE]') continue
+    const state = initAnthropicStreamState()
 
-        try {
-          const chunk = JSON.parse(data)
-          const events = openAIChunkToClaudeEvents(chunk, state, contentBlockIndex, toolBlockIndex)
-          for (const event of events) {
-            yield new TextEncoder().encode('event: ' + event.type + '\ndata: ' + event.data + '\n\n')
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        lineBuffer += new TextDecoder().decode(value)
+        const lines = lineBuffer.split('\n')
+        // Last element is either '' (clean line end) or a partial next line.
+        lineBuffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue
+          const data = line.slice(5).trim()
+          if (data === '[DONE]') continue
+
+          try {
+            const chunk = JSON.parse(data)
+            const events = openAIChunkToClaudeEvents(chunk, state)
+            for (const event of events) {
+              yield new TextEncoder().encode('event: ' + event.type + '\ndata: ' + event.data + '\n\n')
+            }
+          } catch {
+            // Non-JSON, skip
           }
-        } catch {
-          // Non-JSON, skip
         }
       }
+    } finally {
+      reader.releaseLock()
+    }
+
+    // Send final events. finalizeClaudeStream already emits message_stop —
+    // never append another here or Anthropic clients see a duplicate trailing
+    // message_stop event.
+    for (const event of finalizeClaudeStream(state)) {
+      yield new TextEncoder().encode('event: ' + event.type + '\ndata: ' + event.data + '\n\n')
     }
   } finally {
-    reader.releaseLock()
-  }
-
-  // Send final events. finalizeClaudeStream already emits message_stop —
-  // never append another here or Anthropic clients see a duplicate trailing
-  // message_stop event.
-  for (const event of finalizeClaudeStream(state)) {
-    yield new TextEncoder().encode('event: ' + event.type + '\ndata: ' + event.data + '\n\n')
+    // Runs on clean end AND on early termination (client cancel / upstream
+    // error) — the lease must never outlive the stream.
+    if (onDone) await onDone().catch(() => {})
   }
 }
 
@@ -465,17 +519,21 @@ function handleFreebuffError(err: unknown, model: string): Response {
   const statusMatch = msg.match(/\[(\w+)\]/)
   const fbStatus = statusMatch ? statusMatch[1] : 'api_error'
   const { openAIError, httpStatus } = formatFreebuffError(fbStatus, msg, model)
-  return new Response(JSON.stringify({ error: openAIError }), {
-    status: httpStatus,
-    headers: { 'Content-Type': 'application/json' },
-  })
+  return anthropicErrorResponse(openAIError.message as string, httpStatus)
 }
 
 function handleFreebuffResponseError(response: Response, model: string): Response {
+  return anthropicErrorResponse(`OpenAI API error: ${response.status}`, response.status === 429 ? 429 : response.status >= 500 ? 503 : 400)
+}
+
+/** Anthropic Messages API error envelope: { type: 'error', error: { type, message } }. */
+function anthropicErrorResponse(message: string, httpStatus: number): Response {
   return new Response(
-    JSON.stringify({ error: { message: `OpenAI API error: ${response.status}` } }),
-    { status: response.status === 429 ? 429 : response.status >= 500 ? 503 : 400,
-      headers: { 'Content-Type': 'application/json' } },
+    JSON.stringify({
+      type: 'error',
+      error: { type: 'api_error', message },
+    }),
+    { status: httpStatus, headers: { 'Content-Type': 'application/json' } },
   )
 }
 
@@ -483,10 +541,13 @@ export function openAINonStreamToClaude(json: Record<string, unknown>): Record<s
   const choices = json.choices as Array<Record<string, unknown>> | undefined
   if (!choices || choices.length === 0) {
     return {
-      type: 'content',
+      id: crypto.randomUUID(),
+      type: 'message',
       role: 'assistant',
-      content: [{ type: 'text', text: '' }],
+      model: str(json.model),
+      content: [],
       stop_reason: 'end_turn',
+      usage: json.usage,
     }
   }
 
@@ -511,12 +572,18 @@ export function openAINonStreamToClaude(json: Record<string, unknown>): Record<s
   }
 
   return {
-    type: 'content',
+    id: crypto.randomUUID(),
+    type: 'message',
     role: 'assistant',
+    model: str(json.model),
     content,
     stop_reason: choice.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
     usage: json.usage,
   }
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
 }
 
 function safeJSONParse(s: string): unknown {
@@ -549,8 +616,10 @@ export async function startRouter(configOverride?: RouterConfig): Promise<Return
         })
       }
 
-      // All /v1/* routes require auth if routerKey is set
-      if (path.startsWith('/v1/')) {
+      // All routes except /health require auth if routerKey is set — this
+      // includes the non-/v1 alias routes (convenience mirrors would
+      // otherwise bypass the gate and burn Freebuff quota unauthenticated).
+      if (path !== '/health') {
         const authErr = checkAuth(req, config)
         if (authErr) return authErr
       }
@@ -606,6 +675,33 @@ export async function startRouter(configOverride?: RouterConfig): Promise<Return
         const newUrl = new URL(req.url)
         newUrl.pathname = `/v1/${subPath}`
         const newReq = new Request(newUrl, req)
+        if (subPath === 'messages') return handleClaudeMessages(newReq, config, pool)
+        if (subPath === 'models') return modelsResponse(pool)
+        if (subPath === 'streak') {
+          const streak = await pool.fetchStreak().catch(() => ({ error: 'unreachable' }))
+          return new Response(JSON.stringify(streak), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (subPath === 'token-count') {
+          const payload = await newReq.json().catch(() => null)
+          if (!payload || typeof payload !== 'object') {
+            return new Response(JSON.stringify({ error: { message: 'Invalid JSON body' } }), {
+              status: 400,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          }
+          const { json, error } = await pool.fetchTokenCount(payload as Record<string, unknown>)
+          if (error) {
+            return new Response(JSON.stringify({ error: { message: error } }), {
+              status: 400,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          }
+          return new Response(JSON.stringify(json), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
         return handleChat(newReq, config, pool)
       }
 

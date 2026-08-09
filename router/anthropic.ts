@@ -382,6 +382,8 @@ interface AnthropicStreamState {
   toolUseBuffer: Array<{ id: string; name: string; args: string }>
   toolIndex: number
   hasContent: boolean
+  /** True once content_block_start has been emitted for the text block. */
+  textBlockStarted: boolean
   finishReason: string | null
 }
 
@@ -389,8 +391,6 @@ interface AnthropicStreamState {
 export function openAIChunkToClaudeEvents(
   chunk: Record<string, unknown>,
   state: AnthropicStreamState,
-  contentBlockIndex: number,
-  toolBlockIndex: number,
 ): Array<Record<string, string>> {
   const events: Array<Record<string, string>> = []
 
@@ -403,6 +403,20 @@ export function openAIChunkToClaudeEvents(
 
   // Content
   if (typeof delta.content === 'string' && delta.content) {
+    // Anthropic requires content_block_start before any delta for the block.
+    // Emit it once, on the first text delta.
+    if (!state.textBlockStarted) {
+      state.textBlockStarted = true
+      events.push({
+        type: 'content_block_start',
+        index: '0',
+        data: JSON.stringify({
+          type: 'text',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+      })
+    }
     state.textBuffer = (state.textBuffer || '') + delta.content
     state.hasContent = true
     events.push({
@@ -510,8 +524,9 @@ export function initAnthropicStreamState(): AnthropicStreamState {
   return {
     textBuffer: '',
     toolUseBuffer: [],
-    hasContent: false,
-    finishReason: null,
     toolIndex: 0,
+    hasContent: false,
+    textBlockStarted: false,
+    finishReason: null,
   }
 }
