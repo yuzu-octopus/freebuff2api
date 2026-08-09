@@ -165,7 +165,8 @@ freebuff2api/
 
 ## License
 
-MIT + third-party-services disclaimer — see [LICENSE.md](LICENSE.md). An
-educational project; Freebuff is a trademark of Codebuff AI. Use of the
-Freebuff API through this router may violate its Terms of Service; users
-assume that responsibility themselves (see the disclaimer).
+MIT + third-party-services disclaimer — see [LICENSE.md](LICENSE.md). Freebuff
+is a trademark of its respective owner; this project is independent and not
+affiliated with or endorsed by it. Use of the Freebuff API through this router
+may violate its Terms of Service; users assume that responsibility themselves
+(see the disclaimer).
