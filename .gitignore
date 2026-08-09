@@ -31,6 +31,9 @@ Thumbs.db
 source/
 PROMPT.md
 
+# npm pack artifacts
+*.tgz
+
 # Local config (may contain secrets/keys)
 router.config.json
 router/router.config.json
