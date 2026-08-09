@@ -36,6 +36,7 @@ interface MockState {
   lastStartHeaders: Record<string, string> | null
   lastStartBody: Record<string, unknown> | null
   lastChatBody: Record<string, unknown> | null
+  lastTokenCountBody: Record<string, unknown> | null
 }
 
 let server: { port: number; stop: (force?: boolean) => void }
@@ -52,6 +53,7 @@ function startMockServer(): Promise<void> {
     lastStartHeaders: null,
     lastStartBody: null,
     lastChatBody: null,
+    lastTokenCountBody: null,
   }
 
   server = serve({
@@ -145,6 +147,17 @@ function startMockServer(): Promise<void> {
             Connection: 'keep-alive',
           },
         })
+      }
+
+      if (url.pathname === '/api/v1/freebuff/streak') {
+        return Response.json({ streak: 3, unit: 'day' })
+      }
+
+      if (url.pathname === '/api/v1/token-count') {
+        const body = await req.json().catch(() => ({}))
+        state.lastTokenCountBody = body
+        if (body?.fail) return Response.json({ error: 'upstream boom' }, { status: 400 })
+        return Response.json({ tokenCount: 42, context: { promptTokens: 10, completionTokens: 32 } })
       }
 
       return new Response('Not found', { status: 404 })
@@ -433,6 +446,75 @@ describe('FreebuffTokenPool', () => {
     } finally {
       pool.release(client)
     }
+  })
+
+  it('marks a token tool-quota exhausted and skips it in pool picks', async () => {
+    const pool = new FreebuffTokenPool(baseUrl, [VALID_TOKEN, 'token-b'])
+    const first = await pool.acquire('deepseek/deepseek-v4-flash')
+    try {
+      await first.admitSession('deepseek/deepseek-v4-flash')
+      first.markToolQuotaExhausted(60_000)
+      expect(first.isToolQuotaExhausted()).toBe(true)
+    } finally {
+      pool.release(first)
+    }
+
+    // first has session affinity for this model, but it is quarantined —
+    // acquire must skip it (via pickIdleWithModel and pickIdle) and return
+    // the other idle token.
+    const second = await pool.acquire('deepseek/deepseek-v4-flash')
+    try {
+      expect(second).not.toBe(first)
+      expect(second.token).toBe('token-b')
+    } finally {
+      pool.release(second)
+    }
+  })
+
+  it('picks a token again after its tool-quota cooldown expires', async () => {
+    const pool = new FreebuffTokenPool(baseUrl, [VALID_TOKEN, 'token-b'])
+    const first = await pool.acquire('deepseek/deepseek-v4-flash')
+    try {
+      await first.admitSession('deepseek/deepseek-v4-flash') // session affinity
+      first.markToolQuotaExhausted(-1) // cooldown already in the past
+      expect(first.isToolQuotaExhausted()).toBe(false)
+    } finally {
+      pool.release(first)
+    }
+
+    // pickIdleWithModel prefers first (same-model session); its cooldown has
+    // expired so it is pickable again.
+    const again = await pool.acquire('deepseek/deepseek-v4-flash')
+    try {
+      expect(again).toBe(first)
+    } finally {
+      pool.release(again)
+    }
+  })
+
+  it('masks tokens in pool snapshot (tokenLabel)', async () => {
+    const pool = new FreebuffTokenPool(baseUrl, ['1234567890abcd', '12345678'])
+    const snap = pool.snapshot()
+    expect(snap[0].token).toBe('1234…abcd')
+    expect(snap[1].token).toBe('***')
+  })
+
+  it('fetches streak and token count through the pool', async () => {
+    const pool = new FreebuffTokenPool(baseUrl, [VALID_TOKEN])
+
+    const streak = await pool.fetchStreak()
+    expect(streak).toEqual({ streak: 3, unit: 'day' })
+
+    const payload = { prompt: 'hi', model: 'deepseek/deepseek-v4-flash' }
+    const { json, error } = await pool.fetchTokenCount(payload)
+    expect(error).toBeUndefined()
+    expect(json).toMatchObject({ tokenCount: 42 })
+    expect(state.lastTokenCountBody).toEqual(payload)
+
+    // Upstream error surfaces as { error } rather than throwing
+    const fail = await pool.fetchTokenCount({ fail: true })
+    expect(fail.error).toBe('upstream boom')
+    expect(fail.json).toBeUndefined()
   })
 })
 

@@ -64,6 +64,55 @@ describe('config', () => {
     }
   })
 
+  it('derives routerKey from ROUTER_KEY env when the file omits it', () => {
+    const noKeyConfig = path.join(import.meta.dirname, 'test.nokey.json')
+    fs.writeFileSync(noKeyConfig, JSON.stringify({ host: '127.0.0.1', port: 8080 }))
+
+    const saved = process.env.ROUTER_KEY
+    process.env.ROUTER_KEY = 'env-router-key'
+    try {
+      const config = loadConfig(noKeyConfig)
+      expect(config.routerKey).toBe('env-router-key')
+    } finally {
+      if (saved === undefined) delete process.env.ROUTER_KEY
+      else process.env.ROUTER_KEY = saved
+      fs.unlinkSync(noKeyConfig)
+    }
+  })
+
+  it('prefers the file routerKey over ROUTER_KEY env', () => {
+    const saved = process.env.ROUTER_KEY
+    process.env.ROUTER_KEY = 'env-key'
+    try {
+      // TMP_CONFIG carries routerKey: 'test-key' in the file
+      expect(loadConfig(TMP_CONFIG).routerKey).toBe('test-key')
+    } finally {
+      if (saved === undefined) delete process.env.ROUTER_KEY
+      else process.env.ROUTER_KEY = saved
+    }
+  })
+
+  it('does not fall back to FREEBUFF_TOKEN for routerKey', () => {
+    // routerKey: null in the file → falls through to env; without ROUTER_KEY
+    // the router stays open even when FREEBUFF_TOKEN is set.
+    const nullKeyConfig = path.join(import.meta.dirname, 'test.nullkey.json')
+    fs.writeFileSync(nullKeyConfig, JSON.stringify({ host: '127.0.0.1', port: 8080, routerKey: null }))
+
+    const savedKey = process.env.ROUTER_KEY
+    const savedToken = process.env.FREEBUFF_TOKEN
+    delete process.env.ROUTER_KEY
+    process.env.FREEBUFF_TOKEN = 'freebuff-token'
+    try {
+      const config = loadConfig(nullKeyConfig)
+      expect(config.routerKey).toBeUndefined()
+    } finally {
+      if (savedKey !== undefined) process.env.ROUTER_KEY = savedKey
+      if (savedToken !== undefined) process.env.FREEBUFF_TOKEN = savedToken
+      else delete process.env.FREEBUFF_TOKEN
+      fs.unlinkSync(nullKeyConfig)
+    }
+  })
+
   it('throws if config file missing', () => {
     expect(() => loadConfig(path.join(import.meta.dirname, 'nonexistent.config.json'))).toThrow(
       /Config not found/,

@@ -10,6 +10,7 @@ Key source files:
 - `common/src/constants/freebuff-models.ts` — model catalog, quotas, wire headers
 - `common/src/constants/freebuff-model-ids.ts` — model id literals
 - `packages/agent-runtime/src/llm-api/codebuff-web-api.ts` — web-search / docs-search / gravity-index / token-count
+- `sdk/src/composio.ts` — composio/execute server proxy
 
 ## Endpoints
 
@@ -23,6 +24,9 @@ Key source files:
 | `https://codebuff.com/api/v1/docs-search` | POST | Docs search (agent tool) |
 | `https://codebuff.com/api/v1/gravity-index` | POST | Gravity index (agent tool) |
 | `https://codebuff.com/api/v1/token-count` | POST | Token counting |
+| `https://codebuff.com/api/v1/composio/execute` | POST | Composio app-tool execution (`{toolName, input}` → `{output[]}`) |
+| `https://codebuff.com/api/auth/cli/code` | POST | CLI device-login code request |
+| `https://codebuff.com/api/auth/cli/status` | GET | CLI device-login polling (token issue) |
 | `https://codebuff.com/api/v1/me` | GET | User details |
 | `https://codebuff.com/api/v1/usage` | POST | Server-side usage/billing |
 | `https://codebuff.com/api/v1/feedback` | POST | Feedback |
@@ -94,3 +98,101 @@ Also required:
 - Body: `codebuff_metadata.cost_mode: 'free'` (mandatory; `freebuff_instance_id` = session UUID, `run_id`, `client_id`, `n` = root agent id `base2-free-deepseek-flash`). `provider: { data_collection: 'deny' }` and top-level `runId` are accepted, not required.
 
 The free session endpoint (GET/DELETE, quota introspection) is not gated; only free-mode inference is. The marker only needs to be the first system message — the router injects it into the caller's first system message (or inserts a standalone one, dedupe via `hasFreeMarker`) and defers to the client's conversation.
+
+## Additional tool endpoints (live-verified, `www.codebuff.com`)
+
+The SDK's web-API client (`packages/agent-runtime/src/llm-api/codebuff-web-api.ts`) targets `NEXT_PUBLIC_CODEBUFF_APP_URL`, which defaults to `https://codebuff.com` and 301-redirects to the canonical `https://www.codebuff.com` host — hit the `www` host directly. Unlike chat, these endpoints are **not** gated by the free-mode marker, and they accept the plain Freebuff API token via `Authorization: Bearer <token>` — the `x-codebuff-api-key` header the SDK also sends is **not** required, and plain `Bearer` auth works on the free tier (live-verified; `creditsUsed` comes back `0`). Retryable HTTP statuses (429/5xx) are retried by the SDK with exponential backoff.
+
+### `POST /api/v1/web-search`
+
+Agent web-search tool. Body:
+
+```json
+{ "query": "…", "depth": "standard" /* or "deep" */, "repoUrl": "…" }
+```
+
+`repoUrl` is optional (scoped search). Response:
+
+```json
+{ "result": "…JSON string…", "creditsUsed": 0 }
+```
+
+`result` is the **search-pack format**: a JSON *string* encoding the pack the CLI renders directly — `organic[]` entries with `title`, `link`, `snippet`, `date`, `position` (plus the query/`kind` metadata the pack carries), rather than a bare web-search hit list. Illustrative `organic[]` entry (field names per live verification; values vary per query):
+
+```json
+{ "title": "…", "link": "https://…", "snippet": "…", "date": "2026-08-09", "position": 1 }
+```
+
+### `POST /api/v1/docs-search`
+
+Body: `{ "libraryTitle": "…", "topic": "…", "maxTokens": 8000, "repoUrl": "…" }` — only `libraryTitle` is required; `topic`, `maxTokens`, `repoUrl` optional. Response carries `documentation` (markdown) and `creditsUsed`; a source URL field appears for docs-backed answers [INFERENCE — response fields beyond `documentation`/`creditsUsed` are not asserted by the SDK].
+
+### `POST /api/v1/gravity-index`
+
+Accepts the SDK's `JSONGraph` search action verbatim as the whole body: `{ "input": { "action": "search", … } }` (the caller's `input` object is forwarded as the payload, per `callGravityIndexAPI`). Response: `{ "result": {…JSONGraph…}, "creditsUsed": 0 }` — the SDK treats the entire server object as `result`. [INFERENCE — server-side action schema not read from source; only the SDK passthrough shape is.]
+
+### `GET /api/v1/freebuff/streak`
+
+Live-verified. Returns the daily streak/quota status. Documented fields:
+
+```json
+{ "streak": 7, "todayUsed": 2, "lastResetAt": "…", "lastResetDate": "…", "lastResetMultiplier": 1 }
+```
+
+Roughly: `streak` = consecutive days, `todayUsed` = sessions consumed today against the streak-adjusted pool, `lastResetAt`/`lastResetDate` = midnight-Pacific reset timestamp, `lastResetMultiplier` = the streak bonus applied for the current day (`0` on the base allowance, e.g. `1` for a 7-day streak). The router's `/health?verbose=1` and `/v1/streak` surface this object unmodified.
+
+### `POST /api/v1/token-count`
+
+The CLI's context meter (updates `agentState.contextTokenCount` after each agent step). Body: `{ "messages": […], "system": "…", "model": "…", "tools": […] }` — only `messages` required. Response: server-side token count; the SDK reads `inputTokens` from it. The router passes the upstream response body through untouched.
+
+### `POST /api/v1/composio/execute`
+
+SDK proxy (`sdk/src/composio.ts`) for the Composio meta-tools. Body: `{ "toolName": "composio_search_tools" | "composio_get_tool_schemas" | "composio_manage_connections" | "composio_multi_execute_tool", "input": {…} }`. Response: `{ "output": ToolResultOutput[] }` — an array of tool result parts (`{type: 'json', value}` etc.) the agent loop returns verbatim. Errors are surfaced as a single `{type: 'json', value: {errorMessage, status}}` output item, not an HTTP error. [INFERENCE — response error-item shape is SDK-side; upstream body may differ.]
+
+### Device login — `POST /api/auth/cli/code` + `GET /api/auth/cli/status`
+
+The CLI's device-code login (future guided-auth path for this router; not client-facing yet). The SDK requests a code with `POST /api/auth/cli/code` `{ "fingerprintId": "…" }` (no auth), then polls `GET /api/auth/cli/status?fingerprintId=…&fingerprintHash=…` (also unauthenticated) until the user approves in the browser and the response returns the signed-in token. A plain `GET /api/auth/cli/code` pairing is also expected for web flows [INFERENCE — the SDK only POSTs; the GET form was not probe-tested]. The resulting token is the same Freebuff API token used everywhere in this doc.
+
+## Router surface (this repo) — new in 8b0437f
+
+The router at `localhost:8787` adds a small observability surface mirroring the Freebuff endpoints above. `ROUTER_KEY` (env) now independently controls router auth — see below.
+
+| Route | Method | Auth | Behavior |
+|---|---|---|---|
+| `/health` | GET | never | `{status:'ok', tokens:N}`; `?verbose=1` adds `tokensDetail` + `streak` |
+| `/v1/streak` | GET | routerKey | passthrough of `GET /api/v1/freebuff/streak` |
+| `/streak` | GET | **never** | same passthrough, ungated alias |
+| `/v1/token-count` | POST | routerKey | passthrough of `POST /api/v1/token-count` |
+| `/token-count` | POST | **never** | same, ungated alias |
+
+### `GET /health?verbose=1`
+
+```json
+{
+  "status": "ok",
+  "tokens": 3,
+  "tokensDetail": [
+    { "token": "abcd…wxyz", "busy": false, "sessionModel": "deepseek/deepseek-v4-flash", "toolQuotaExhausted": false }
+  ],
+  "streak": { "streak": 7, "todayUsed": 2, … }
+}
+```
+
+- No auth ever (health is exempt from the routerKey gate).
+- `tokensDetail` is one row per pool token: `token` is masked (`label` = first 4 + `…` + last 4 chars, `***` if shorter), `busy` = an in-flight lease, `sessionModel` = the model the token's session is bound to, `toolQuotaExhausted` = token is inside its 15-minute post-429 quarantine.
+- `streak` = first token's upstream streak object; `{error: 'unreachable'}` if the upstream call fails.
+
+### `GET /v1/streak` (alias `/streak`)
+
+Raw passthrough of the first token's `GET /api/v1/freebuff/streak`; `{error: 'unreachable'}` on failure. Note the ungated `/streak` alias lives outside `/v1/*`, so it slips the routerKey gate — intentional for convenience mirrors alongside `/models`, `/chat/completions`, etc.
+
+### `POST /v1/token-count` (alias `/token-count`)
+
+Body passes through to the first token's `POST /api/v1/token-count`, response verbatim. Bad/invalid JSON body → `400 {error:{message:'Invalid JSON body'}}`; an upstream error → `400 {error:{message: <upstream error>}}`.
+
+### Router auth: `ROUTER_KEY`
+
+- `routerKey` now derives **only** from `router.config.json` or the `ROUTER_KEY` env var (commit 8b0437f removed the fallback to the Freebuff tokens — `FREEBUFF_TOKEN` no longer gates the router).
+- If `routerKey` is null/absent/empty → the router is **open** (no auth).
+- If set, every `/v1/*` route requires `Authorization: Bearer <routerKey>`; failure → `401 {error: {message: 'Unauthorized', type: 'auth_error'}}` with `WWW-Authenticate: Bearer`.
+- Non-`/v1` mirrors (`/health`, `/models`, `/streak`, `/token-count`, `/chat/completions`, `/messages`, …) are never auth-gated.

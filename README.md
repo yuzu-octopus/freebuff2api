@@ -101,8 +101,10 @@ cp router.config.example.json router.config.json
 
 ### Router auth key
 
-If `routerKey` is set, all `/v1/*` routes require
-`Authorization: Bearer <routerKey>`. If unset, the router is open locally.
+`routerKey` comes from the config file or the `ROUTER_KEY` env var — it is
+independent of `FREEBUFF_TOKEN`. If set, all `/v1/*` routes require
+`Authorization: Bearer <routerKey>`. If unset (null/absent), the router is
+open locally.
 
 ## Testing
 
@@ -122,6 +124,23 @@ bun smoke
 ### `GET /health`
 
 Health check. Returns `{ "status": "ok", "tokens": <N> }`.
+
+### `GET /health`
+
+Health check. Returns `{ "status": "ok", "tokens": <N> }`. With
+`?verbose=1` also returns `tokensDetail` (per-token masked snapshot: `token`,
+`busy`, `sessionModel`, `toolQuotaExhausted`) and the daily `streak`.
+
+### `GET /v1/streak`
+
+Passthrough of the Freebuff `GET /api/v1/freebuff/streak` (daily streak /
+quota status from the first pool token).
+
+### `POST /v1/token-count`
+
+Passthrough of the Freebuff `POST /api/v1/token-count` (server-side token
+meter); body `{ messages, system?, model?, tools? }` is forwarded verbatim
+and the upstream response is returned unchanged.
 
 ### `GET /v1/models`
 

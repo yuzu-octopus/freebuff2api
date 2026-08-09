@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'bun:test'
-import { openAIChunkToClaudeEvents, initAnthropicStreamState } from './anthropic'
+import { openAIChunkToClaudeEvents, initAnthropicStreamState, finalizeClaudeStream } from './anthropic'
 import { openAINonStreamToClaude } from './server'
 
 describe('openAINonStreamToClaude', () => {
@@ -68,5 +68,36 @@ describe('openAIChunkToClaudeEvents', () => {
     const data = JSON.parse(textDelta!.data) as { text: unknown }
     expect(data.text).toBe('Hi')
     expect(typeof data.text).toBe('string')
+  })
+})
+
+describe('finalizeClaudeStream', () => {
+  it('emits exactly one message_stop event', () => {
+    const state = initAnthropicStreamState()
+    state.hasContent = true
+    state.finishReason = 'stop'
+    const events = finalizeClaudeStream(state)
+
+    expect(events.filter((e) => e.type === 'message_stop')).toHaveLength(1)
+    expect(events.map((e) => e.type)).toEqual([
+      'content_block_stop',
+      'message_delta',
+      'message_stop',
+    ])
+  })
+
+  it('does not emit message_stop mid-stream from chunk translation', () => {
+    // Chunk translation must never produce message_stop itself; only
+    // finalizeClaudeStream owns the terminal event.
+    const state = initAnthropicStreamState()
+    const events = openAIChunkToClaudeEvents(
+      {
+        choices: [{ index: 0, delta: { content: 'Hi' }, finish_reason: 'stop' }],
+      },
+      state,
+      0,
+      0,
+    )
+    expect(events.some((e) => e.type === 'message_stop')).toBe(false)
   })
 })

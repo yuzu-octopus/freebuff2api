@@ -15,6 +15,12 @@ import { MODEL_CATALOG } from './config'
 
 const VALID_TOKEN = 'fake-token'
 
+// Tokens used by the tool-quota failover tests. quota-exhausted-a returns a
+// free-tier tool-quota 429; generic-429-* return plain 429s.
+const EXTRA_TOKENS = ['quota-exhausted-a', 'quota-exhausted-b', 'generic-429-a', 'generic-429-b']
+const QUOTA_EXHAUSTED_TOKEN = 'quota-exhausted-a'
+const chatCounts = new Map<string, number>()
+
 function parseBearer(auth: string | null): string | null {
   if (!auth?.startsWith('Bearer ')) return null
   return auth.slice(7)
@@ -37,7 +43,7 @@ function startFreebuffMock(): Promise<void> {
     async fetch(req) {
       const url = new URL(req.url)
       const token = parseBearer(req.headers.get('authorization'))
-      if (token !== VALID_TOKEN) return new Response('Unauthorized', { status: 401 })
+      if (token !== VALID_TOKEN && !EXTRA_TOKENS.includes(token)) return new Response('Unauthorized', { status: 401 })
 
       const model = req.headers.get('x-freebuff-model')!
 
@@ -95,6 +101,23 @@ function startFreebuffMock(): Promise<void> {
       }
 
       if (url.pathname === '/api/v1/chat/completions') {
+        chatCounts.set(token, (chatCounts.get(token) ?? 0) + 1)
+
+        // Free-tier tool-quota bucket exhausted → 429 naming high-balance
+        if (token === QUOTA_EXHAUSTED_TOKEN) {
+          return new Response(
+            JSON.stringify({ message: 'free-models-per-day-high-balance exceeded' }),
+            { status: 429, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        // Plain 429 without the high-balance marker
+        if (token === 'generic-429-a' || token === 'generic-429-b') {
+          return new Response(
+            JSON.stringify({ message: 'rate limited' }),
+            { status: 429, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
         const encoder = new TextEncoder()
         const stream = new ReadableStream({
           start(controller) {
@@ -114,6 +137,16 @@ function startFreebuffMock(): Promise<void> {
         return new Response(stream, {
           headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' },
         })
+      }
+
+      if (url.pathname === '/api/v1/freebuff/streak') {
+        return Response.json({ streak: 5, unit: 'days' })
+      }
+
+      if (url.pathname === '/api/v1/token-count') {
+        const body = await req.json().catch(() => ({}))
+        if (body?.fail) return Response.json({ error: 'boom' }, { status: 400 })
+        return Response.json({ tokenCount: 100 })
       }
 
       return new Response('Not found', { status: 404 })
@@ -331,6 +364,139 @@ describe('Router server', () => {
       const body = await res.json() as { error: { type: string; message: string } }
       expect(body.error.type).toBe('rate_limit_error')
       expect(body.error.message).toMatch(/rate/i)
+    })
+  })
+
+  describe('Tool-quota 429 failover', () => {
+    async function startFailoverRouter(tokenEnv: string): Promise<MockServer> {
+      const saved = process.env.FREEBUFF_TOKEN
+      process.env.FREEBUFF_TOKEN = tokenEnv
+      const r = await startRouter({
+        host: '127.0.0.1',
+        port: 0,
+        freebuff: { apiHost: freebuffApiUrl, loginHost: 'https://freebuff.com' },
+      })
+      if (saved === undefined) delete process.env.FREEBUFF_TOKEN
+      else process.env.FREEBUFF_TOKEN = saved
+      return r
+    }
+
+    it('fails over to the next token and quarantines the exhausted one', async () => {
+      const failover = await startFailoverRouter('quota-exhausted-a,quota-exhausted-b')
+      const url = `http://127.0.0.1:${failover.port}`
+      try {
+        const res = await fetch(`${url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'deepseek/deepseek-v4-flash',
+            messages: [{ role: 'user', content: 'hi' }],
+            stream: true,
+          }),
+        })
+
+        // Request succeeds via the second token despite the first one's 429
+        expect(res.status).toBe(200)
+        const raw = await res.text()
+        expect(raw).toContain('"content":"Mock "')
+        expect(raw).toContain('"content":"response"')
+
+        // First token is quarantined and masked; second is not
+        interface TokenDetail { token: string; busy: boolean; toolQuotaExhausted: boolean }
+        const health = await fetch(`${url}/health?verbose=1`).then((r) => r.json()) as { tokensDetail: TokenDetail[] }
+        expect(health.tokensDetail).toHaveLength(2)
+        expect(health.tokensDetail[0]).toMatchObject({ token: 'quot…ed-a', toolQuotaExhausted: true })
+        expect(health.tokensDetail[1]).toMatchObject({ token: 'quot…ed-b', toolQuotaExhausted: false })
+
+        // Both tokens saw a chat attempt: a hit the 429, b carried the request
+        expect(chatCounts.get('quota-exhausted-a')).toBe(1)
+        expect(chatCounts.get('quota-exhausted-b')).toBe(1)
+      } finally {
+        failover.stop(true)
+      }
+    })
+
+    it('does not quarantine or retry a 429 without the high-balance marker', async () => {
+      const failover = await startFailoverRouter('generic-429-a,generic-429-b')
+      const url = `http://127.0.0.1:${failover.port}`
+      try {
+        const res = await fetch(`${url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'deepseek/deepseek-v4-flash',
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        })
+        // No retry: the plain 429 propagates as a router error response
+        expect(res.status).toBe(503)
+
+        const health = await fetch(`${url}/health?verbose=1`).then((r) => r.json()) as { tokensDetail: Array<{ toolQuotaExhausted: boolean }> }
+        expect(health.tokensDetail.every((t) => !t.toolQuotaExhausted)).toBe(true)
+
+        // First token got exactly one attempt; the second was never tried
+        expect(chatCounts.get('generic-429-a')).toBe(1)
+        expect(chatCounts.get('generic-429-b') ?? 0).toBe(0)
+      } finally {
+        failover.stop(true)
+      }
+    })
+  })
+
+  describe('GET /v1/streak and POST /v1/token-count', () => {
+    it('returns the daily streak from the backend', async () => {
+      const res = await fetch(`${routerUrl}/v1/streak`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as Record<string, unknown>
+      expect(body.streak).toBe(5)
+    })
+
+    it('passes token-count payloads through to the backend', async () => {
+      const res = await fetch(`${routerUrl}/v1/token-count`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json() as Record<string, unknown>
+      expect(body.tokenCount).toBe(100)
+    })
+
+    it('maps a backend token-count error to a 400 response', async () => {
+      const res = await fetch(`${routerUrl}/v1/token-count`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fail: true }),
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: { message: string } }
+      expect(body.error.message).toBe('boom')
+    })
+  })
+
+  describe('POST /v1/messages (Anthropic)', () => {
+    it('translates the stream and emits exactly one message_stop', async () => {
+      const res = await fetch(`${routerUrl}/v1/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'deepseek/deepseek-v4-flash',
+          messages: [{ role: 'user', content: 'Hello' }],
+          stream: true,
+        }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('text/event-stream')
+
+      const raw = await res.text()
+      const eventLines = raw.split('\n').filter((l) => l.startsWith('event: '))
+      expect(eventLines.filter((l) => l === 'event: message_stop')).toHaveLength(1)
+      expect(raw).toContain('event: message_start')
+      expect(raw).toContain('Mock')
+      expect(raw).toContain('response')
+      // OpenAI's [DONE] sentinel must not leak into the Anthropic stream
+      expect(raw).not.toContain('[DONE]')
     })
   })
 })
