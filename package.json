@@ -1,0 +1,45 @@
+{
+  "name": "freebuff2api",
+  "version": "1.0.0",
+  "description": "Freebuff LLM router - a local OpenAI-compatible /v1 server that proxies free-mode Freebuff models (DeepSeek V4 Flash, MiMo, etc.) for any agent client.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuzu-octopus/freebuff2api.git"
+  },
+  "homepage": "https://github.com/yuzu-octopus/freebuff2api",
+  "bugs": {
+    "url": "https://github.com/yuzu-octopus/freebuff2api/issues"
+  },
+  "bin": {
+    "freebuff2api": "bin/freebuff2api.js"
+  },
+  "exports": {
+    ".": "./router/server.ts"
+  },
+  "files": [
+    "bin",
+    "router/*.ts",
+    "!router/*.test.ts",
+    "!router/smoke-test.ts",
+    "!router/node_modules/**",
+    "router.config.example.json",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "bun bin/freebuff2api.js"
+  },
+  "keywords": [
+    "freebuff",
+    "codebuff",
+    "llm-router",
+    "openai-compatible",
+    "openai",
+    "proxy",
+    "free-mode"
+  ],
+  "engines": {
+    "bun": ">=1.0"
+  },
+  "license": "MIT"
+}

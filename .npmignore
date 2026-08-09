@@ -1,0 +1,17 @@
+# Tests, fixtures, dev-only — excluded from the published tarball
+router/*.test.ts
+router/smoke-test.ts
+**/*.map
+
+# Local config / secrets
+router.config.json
+.env
+.env.*
+
+# Reverse-engineering reference material (not shipped)
+source/
+PROMPT.md
+PROTOCOL.md
+
+# Node
+node_modules/
