@@ -49,11 +49,17 @@ export const DEFAULT_FREEBUFF: FreebuffConfig = {
 // rejects with 403 free_mode_invalid_agent_model.
 export const AGENT_BY_MODEL: Record<string, string> = {
   'deepseek/deepseek-v4-flash': 'base2-free-deepseek-flash',
-  'mimo/mimo-v2.5': 'base2-free-mimo',
   'deepseek/deepseek-v4-pro': 'base2-free-deepseek',
+  'mimo/mimo-v2.5': 'base2-free-mimo',
   'minimax/minimax-m3': 'base2-free-minimax-m3',
   'openai/gpt-5.6-luna': 'base2-free-luna',
   'z-ai/glm-5.2': 'base2-free-glm',
+  'poolside/laguna-s-2.1': 'base2-free-laguna-s-2.1',
+  'inclusionai/ling-3.0-flash:free': 'base2-free-ling-3-flash',
+  'crof/greg-2-ultra': 'base2-free-greg-2-ultra',
+  'crof/greg-2-super': 'base2-free-greg-2-super',
+  'anthropic/claude-fable-5': 'base2-free-fable',
+  'meta/muse-spark-1.2-contributor': 'base2-free-muse-spark',
 }
 
 export const AGENT_FALLBACK = 'base2-free'
