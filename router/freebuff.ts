@@ -59,6 +59,8 @@ export class FreebuffTokenClient {
   private sessionModel: string | null = null
   private userId: string | null | undefined = undefined
   private userIdFetching: Promise<string | null> | null = null
+  /** MS epoch until this token's tool-quota bucket is expected to free up. */
+  private quotaExhaustedUntil: number = 0
 
   constructor(token: string, apiHost: string) {
     this.token = token
@@ -373,6 +375,49 @@ async streamChat(
   getSessionModel(): string | null {
     return this.sessionModel
   }
+
+  /**
+   * Mark this token's tool-quota bucket exhausted for `cooldownMs`. The pool
+   * skips it until then so subsequent tool requests fail over to other tokens
+   * instead of rehitting the same 429.
+   */
+  markToolQuotaExhausted(cooldownMs: number): void {
+    this.quotaExhaustedUntil = Date.now() + cooldownMs
+  }
+
+  /** True while this token is in its tool-quota cooldown window. */
+  isToolQuotaExhausted(): boolean {
+    return Date.now() < this.quotaExhaustedUntil
+  }
+
+  /** Daily free streak (quota/streak status surface). */
+  async fetchStreak(): Promise<Record<string, unknown>> {
+    const res = await fetch(`${this.apiHost}/api/v1/freebuff/streak`, {
+      headers: this.authHeaders(),
+    })
+    if (!res.ok) return { error: `Streak fetch failed: HTTP ${res.status}` }
+    return (await res.json().catch(() => ({}))) as Record<string, unknown>
+  }
+
+  /** Token-count passthrough (mirrors the CLI's context-metering call). */
+  async fetchTokenCount(payload: Record<string, unknown>): Promise<{ json?: unknown; error?: string }> {
+    const res = await fetch(`${this.apiHost}/api/v1/token-count`, {
+      method: 'POST',
+      headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const json = await res.json().catch(() => null)
+    if (!res.ok) {
+      const msg = (json as Record<string, unknown>)?.error
+      return { error: msg ? String(msg) : `HTTP ${res.status}` }
+    }
+    return { json }
+  }
+
+  /** Masked token for status surfaces (never expose the raw value). */
+  tokenLabel(): string {
+    return this.token.length > 8 ? `${this.token.slice(0, 4)}…${this.token.slice(-4)}` : '***'
+  }
 }
 
 /**
@@ -438,7 +483,7 @@ export class FreebuffTokenPool {
     const count = this.clients.length
     for (let i = 0; i < count; i++) {
       const idx = (this.nextIndex + i) % count
-      if (!this.clients[idx].isBusy) {
+      if (!this.clients[idx].isBusy && !this.clients[idx].isToolQuotaExhausted()) {
         this.nextIndex = (idx + 1) % count
         return this.clients[idx]
       }
@@ -449,7 +494,7 @@ export class FreebuffTokenPool {
   /** Pick an idle token that has an active session for `model`. */
   private pickIdleWithModel(model: string): FreebuffTokenClient | null {
     for (const client of this.clients) {
-      if (!client.isBusy && client.getSessionModel() === model) {
+      if (!client.isBusy && !client.isToolQuotaExhausted() && client.getSessionModel() === model) {
         return client
       }
     }
@@ -463,5 +508,25 @@ export class FreebuffTokenPool {
     } catch {
       return null
     }
+  }
+
+  /** Per-token status for /health?verbose. Masks tokens; no secret exposure. */
+  snapshot(): Array<{ token: string; busy: boolean; sessionModel: string | null; toolQuotaExhausted: boolean }> {
+    return this.clients.map((c) => ({
+      token: c.tokenLabel(),
+      busy: c.isBusy,
+      sessionModel: c.getSessionModel(),
+      toolQuotaExhausted: c.isToolQuotaExhausted(),
+    }))
+  }
+
+  /** Daily free streak via the first token (quota/streak status surface). */
+  fetchStreak(): Promise<Record<string, unknown>> {
+    return this.clients[0].fetchStreak()
+  }
+
+  /** Token-count passthrough (mirrors the CLI's context-metering call). */
+  fetchTokenCount(payload: Record<string, unknown>): Promise<{ json?: unknown; error?: string }> {
+    return this.clients[0].fetchTokenCount(payload)
   }
 }

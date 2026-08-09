@@ -130,6 +130,10 @@ interface LeaseResult {
   admitted: boolean
   cleanup: () => Promise<void>
 }
+// How long a token is skipped after its tool-quota bucket 429s. Long enough
+// to fail tool calls over to other tokens for the day, short enough that a
+// transient blip doesn't strand the token useless.
+const TOOL_QUOTA_COOLDOWN_MS = 15 * 60 * 1000
 // Acquire a token from the pool, run the full Freebuff protocol flow.
 // Retries on model_locked (session bound to a different model) by trying
 // the next idle token. Returns the response and a cleanup function.
@@ -156,14 +160,31 @@ async function executeWithLease(
     } catch (err) {
       pool.release(client)
       const msg = (err as Error).message
+      // Session bound to a different model → try the next idle token.
       if (msg.includes('model_locked') && attempts < maxAttempts - 1) {
         attempts++
         continue
+      }
+      // Free tier's tool-quota bucket exhausted (a 429 naming high-balance /
+      // free-models-per-day). Quarantine this token and fail the request over
+      // to another token; only genuinely-failing tool-quota 429s count — other
+      // 429s propagate as-is.
+      if (isToolQuota429(msg)) {
+        client.markToolQuotaExhausted(TOOL_QUOTA_COOLDOWN_MS)
+        if (attempts < maxAttempts - 1) {
+          attempts++
+          continue
+        }
       }
       throw err
     }
   }
   throw new Error('All tokens exhausted trying to acquire a session')
+}
+
+/** True for the free-tier tool-quota 429 (`free-models-per-day-high-balance`). */
+function isToolQuota429(msg: string): boolean {
+  return msg.includes('429') && msg.includes('high-balance')
 }
 
 async function tryLeaseClient(
@@ -429,11 +450,12 @@ async function* openAIToClaudeSSE(body: ReadableStream<Uint8Array>): AsyncGenera
     reader.releaseLock()
   }
 
-  // Send final events
+  // Send final events. finalizeClaudeStream already emits message_stop —
+  // never append another here or Anthropic clients see a duplicate trailing
+  // message_stop event.
   for (const event of finalizeClaudeStream(state)) {
     yield new TextEncoder().encode('event: ' + event.type + '\ndata: ' + event.data + '\n\n')
   }
-  yield new TextEncoder().encode('event: message_stop\ndata: ' + JSON.stringify({ type: 'message_stop' }) + '\n\n')
 }
 
 /** Translate Freebuff/OpenAI error to Anthropic format. */
@@ -515,7 +537,14 @@ export async function startRouter(configOverride?: RouterConfig): Promise<Return
 
       // Health check (no auth)
       if (path === '/health') {
-        return new Response(JSON.stringify({ status: 'ok', tokens: pool.tokenCount }), {
+        const url = new URL(req.url)
+        const verbose = url.searchParams.get('verbose') === '1'
+        const base: Record<string, unknown> = { status: 'ok', tokens: pool.tokenCount }
+        if (verbose) {
+          base.tokensDetail = pool.snapshot()
+          base.streak = await pool.fetchStreak().catch(() => ({ error: 'unreachable' }))
+        }
+        return new Response(JSON.stringify(base), {
           headers: { 'Content-Type': 'application/json' },
         })
       }
@@ -524,6 +553,33 @@ export async function startRouter(configOverride?: RouterConfig): Promise<Return
       if (path.startsWith('/v1/')) {
         const authErr = checkAuth(req, config)
         if (authErr) return authErr
+      }
+
+      if (path === '/v1/streak' || path === '/streak') {
+        const streak = await pool.fetchStreak().catch(() => ({ error: 'unreachable' }))
+        return new Response(JSON.stringify(streak), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (path === '/v1/token-count' || path === '/token-count') {
+        const payload = await req.json().catch(() => null)
+        if (!payload || typeof payload !== 'object') {
+          return new Response(JSON.stringify({ error: { message: 'Invalid JSON body' } }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        const { json, error } = await pool.fetchTokenCount(payload as Record<string, unknown>)
+        if (error) {
+          return new Response(JSON.stringify({ error: { message: error } }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(json), {
+          headers: { 'Content-Type': 'application/json' },
+        })
       }
 
       // Route matching

@@ -87,7 +87,7 @@ export function loadConfig(path = process.env.ROUTER_CONFIG ?? DEFAULT_CONFIG_PA
   return {
     host: raw.host ?? '127.0.0.1',
     port: raw.port ?? 8787,
-    routerKey: raw.routerKey ?? process.env.FREEBUFF_TOKEN,
+    routerKey: raw.routerKey ?? process.env.ROUTER_KEY,
     freebuff: raw.freebuff
       ? { ...DEFAULT_FREEBUFF, ...raw.freebuff }
       : { ...DEFAULT_FREEBUFF },

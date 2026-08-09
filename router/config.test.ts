@@ -47,10 +47,10 @@ describe('config', () => {
       port: 8080,
     }))
 
-    // loadConfig falls back to FREEBUFF_TOKEN for routerKey; keep the env out
+    // loadConfig derives routerKey from ROUTER_KEY env; keep the env out
     // of this assertion so CI (which may set it) can't break the test.
-    const savedToken = process.env.FREEBUFF_TOKEN
-    delete process.env.FREEBUFF_TOKEN
+    const savedToken = process.env.ROUTER_KEY
+    delete process.env.ROUTER_KEY
     try {
       const config = loadConfig(noFreebuffConfig)
       expect(config.host).toBe('127.0.0.1')
@@ -59,7 +59,7 @@ describe('config', () => {
       expect(config.freebuff.apiHost).toBe(DEFAULT_FREEBUFF.apiHost)
       expect(config.freebuff.loginHost).toBe(DEFAULT_FREEBUFF.loginHost)
     } finally {
-      if (savedToken !== undefined) process.env.FREEBUFF_TOKEN = savedToken
+      if (savedToken !== undefined) process.env.ROUTER_KEY = savedToken
       fs.unlinkSync(noFreebuffConfig)
     }
   })
