@@ -1,6 +1,6 @@
 {
   "name": "freebuff2api",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Freebuff LLM router - a local OpenAI-compatible /v1 server that proxies free-mode Freebuff models (DeepSeek V4 Flash, MiMo, etc.) for any agent client.",
   "type": "module",
   "repository": {
