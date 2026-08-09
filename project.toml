@@ -302,4 +302,20 @@ cells = ["Tool schema normalization", "Yes ($ref + nullable)", "Yes (LobeChat co
 cells = ["Web UI / admin panel", "No", "No", "No", "Yes (Vue3 + SSE logs)"]
 
 [[sections.rows]]
-cells = ["Tests", "31 tests pass", "Not found in repo", "Extensive test suite", "Extensive test suite"]
+cells = ["Tests", "38 tests pass", "Not found in repo", "Extensive test suite", "Extensive test suite"]
+
+[[sections]]
+id = "links"
+type = "links"
+title = "Related"
+icon = "link"
+
+[[sections.items]]
+title = "npm"
+url = "https://www.npmjs.com/package/freebuff2api"
+description = "Published package — bunx freebuff2api"
+
+[[sections.items]]
+title = "GitHub"
+url = "https://github.com/yuzu-octopus/freebuff2api"
+description = "Source repository"
