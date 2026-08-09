@@ -90,10 +90,9 @@ export function normalizeTools(tools: unknown): unknown {
     const functionDef = result.function as Record<string, unknown> | undefined
     if (functionDef?.parameters) {
       const params = functionDef.parameters as JSONSchema
-      const root = params.definitions ? params : params
       result.function = {
         ...functionDef,
-        parameters: normalizeSchema(params, root),
+        parameters: normalizeSchema(params, params),
       }
     }
 
