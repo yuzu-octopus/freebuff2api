@@ -47,7 +47,12 @@ an idle-slot pool so concurrent requests each get their own token.
 ## Install
 
 ```bash
+# From npm (requires Bun)
+bunx freebuff2api        # or: npx freebuff2api
+
+# Or from source
 bun install
+bun start
 ```
 
 ## Configuration
@@ -62,7 +67,7 @@ export FREEBUFF_TOKEN=your_token_here
 2. Start the router:
 
 ```bash
-bun dev
+bunx freebuff2api
 ```
 
 3. Point your agent at `http://localhost:8787/v1`.
@@ -71,7 +76,7 @@ bun dev
 
 ```bash
 export FREEBUFF_TOKEN=token_a,token_b,token_c
-bun dev
+bunx freebuff2api
 ```
 
 ### Config file
@@ -138,17 +143,29 @@ OpenAI chat format and converts streaming responses back to Anthropic SSE.
 Supports text, image, tool_use, tool_result, and thinking content blocks.
 ## Project layout
 
-├── anthropic.ts       # Anthropic /v1/messages format bridge
-├── types.ts           # Shared TypeScript types
-├── config.ts          # Config loading, model catalog, token resolution
-├── translate.ts       # Responses API → Chat Completions translator
-├── smoke-test.ts      # End-to-end smoke test with mock backend
-
-PROTOCOL.md            # Reverse-engineered Freebuff protocol reference
-source/                # Reference sources (gitignored, not shipped)
-client.mjs             # Standalone protocol client for debugging
+```
+freebuff2api/
+├── bin/freebuff2api.js    # npm bin — starts the router (bun-runtime)
+├── router/                # the whole router lives here
+│   ├── server.ts          # HTTP server, /v1 routing, auth
+│   ├── freebuff.ts        # Freebuff protocol client, session pool, gate injection
+│   ├── prompt.ts          # "You are Buffy" marker + System Override injection
+│   ├── anthropic.ts       # Anthropic /v1/messages format bridge
+│   ├── config.ts          # Config loading, model catalog, token resolution
+│   ├── tools.ts           # Tool schema normalization ($ref / nullable)
+│   ├── translate.ts       # Responses API → Chat Completions translator
+│   ├── types.ts           # Shared TypeScript types
+│   └── *.test.ts          # unit + integration tests (mock backend)
+├── PROTOCOL.md            # Reverse-engineered Freebuff protocol reference
+├── source/                # Reference sources (gitignored, not shipped)
+├── client.mjs             # Standalone protocol client for debugging
+├── docs/                  # Project site (CI-generated from project.toml)
+└── project.toml           # Source for the ProjectSite page
 ```
 
 ## License
 
-Educational project. Freebuff is a trademark of Codebuff AI.
+MIT + third-party-services disclaimer — see [LICENSE.md](LICENSE.md). An
+educational project; Freebuff is a trademark of Codebuff AI. Use of the
+Freebuff API through this router may violate its Terms of Service; users
+assume that responsibility themselves (see the disclaimer).
