@@ -256,7 +256,7 @@ async function handleChat(
     })
   }
 
-  const { runId, response } = result
+  const { response } = result
 
   // Translate Freebuff-specific errors into OpenAI-compatible error responses
   if (!response.ok) {
@@ -450,7 +450,6 @@ function handleFreebuffError(err: unknown, model: string): Response {
 }
 
 function handleFreebuffResponseError(response: Response, model: string): Response {
-  // handled at sync level in caller — this should be async but we'll keep simple
   return new Response(
     JSON.stringify({ error: { message: `OpenAI API error: ${response.status}` } }),
     { status: response.status === 429 ? 429 : response.status >= 500 ? 503 : 400,
@@ -458,13 +457,13 @@ function handleFreebuffResponseError(response: Response, model: string): Respons
   )
 }
 
-function openAINonStreamToClaude(json: Record<string, unknown>): Record<string, unknown> {
+export function openAINonStreamToClaude(json: Record<string, unknown>): Record<string, unknown> {
   const choices = json.choices as Array<Record<string, unknown>> | undefined
   if (!choices || choices.length === 0) {
     return {
       type: 'content',
       role: 'assistant',
-      content: [{ type: 'text', text: { value: '' } }],
+      content: [{ type: 'text', text: '' }],
       stop_reason: 'end_turn',
     }
   }
@@ -474,7 +473,7 @@ function openAINonStreamToClaude(json: Record<string, unknown>): Record<string, 
   const content: Array<Record<string, unknown>> = []
 
   if (msg?.content) {
-    content.push({ type: 'text', text: { value: String(msg.content) } })
+    content.push({ type: 'text', text: String(msg.content) })
   }
 
   if (msg?.tool_calls && Array.isArray(msg.tool_calls)) {

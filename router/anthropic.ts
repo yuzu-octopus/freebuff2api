@@ -408,7 +408,7 @@ export function openAIChunkToClaudeEvents(
     events.push({
       type: 'content_block_delta',
       index: '0',
-      data: JSON.stringify({ type: 'text_delta', text: { value: delta.content } }),
+      data: JSON.stringify({ type: 'text_delta', text: delta.content }),
     })
   }
 
