@@ -968,7 +968,7 @@
       <li><a href="#spoofing"><span class="icon">
 
 <span class="material-symbols-outlined icon-layers" aria-hidden="true">layers</span>
-</span> How We Spoofed the CLI Wire Protocol</a></li>
+</span> CLI Spoofing</a></li>
       
       
       
@@ -977,7 +977,7 @@
       <li><a href="#spoofing-wire"><span class="icon">
 
 <span class="material-symbols-outlined icon-layers" aria-hidden="true">layers</span>
-</span> The Exact Wire Request the Router Sends</a></li>
+</span> Wire Request</a></li>
       
       
       
@@ -1173,13 +1173,11 @@ See PROTOCOL.md for the full reverse-engineered protocol.
   <section id="spoofing" class="reveal">
     <div class="container">
       
-      <h2>How We Spoofed the CLI Wire Protocol</h2>
+      <h2>CLI Spoofing</h2>
       
 
       
-      <em>To be clear upfront: we have explicit permission from the Freebuff team to build this as an educational project.</em>
-
-Free mode on the chat-completions endpoint is gated server-side to the official freebuff CLI. The gate is <em>not</em> an unspoofable signature — we root-caused it from Freebuff's own source (<code>codebuffai/freebuff</code>, <code>common/src/constants/free-agents.ts</code>) and reversed the CLI (<code>~/.bun/bin/freebuff</code>, v0.0.142) to replicate exactly what it sends. Here is the whole signature:
+      Free mode on the chat-completions endpoint is gated server-side to the official freebuff CLI. The gate is <em>not</em> an unspoofable signature — we root-caused it from Freebuff's own source (<code>codebuffai/freebuff</code>, <code>common/src/constants/free-agents.ts</code>) and reversed the CLI (<code>~/.bun/bin/freebuff</code>, v0.0.142) to replicate exactly what it sends. Here is the whole signature:
 
 <div class="callout callout-info">
 <strong>The gate.</strong> <code>hasFreebuffRootSystemPromptOpening</code> checks the <strong>first system message</strong> in the chat body (user messages before it are fine — a request like <code>[user, system, user]</code> passes). That first system message's content must open, byte-exact prefix after leading whitespace, with one of four canonical openings:
@@ -1211,7 +1209,7 @@ The router injects that marker+override into the caller&apos;s <em>first system 
   <section id="spoofing-wire" class="reveal">
     <div class="container">
       
-      <h2>The Exact Wire Request the Router Sends</h2>
+      <h2>Wire Request</h2>
       
 
       
