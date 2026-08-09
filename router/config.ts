@@ -20,6 +20,10 @@ export interface FreebuffModelOption {
   display: string
   quota: string
   type: ModelQuotaType
+  /** Hard context window in tokens (measured from real provider rejections). */
+  contextWindow: number
+  /** Conservative output ceiling in tokens (upstream decides; client cap). */
+  maxOutputTokens: number
 }
 
 export interface FreebuffConfig {
@@ -67,14 +71,20 @@ export const AGENT_FALLBACK = 'base2-free'
 // Default model for probing session status.
 export const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
 
-// Static model catalog: models a user can always request. Unlimited models
+// Static model catalog: models a user can always request. Unlimited models.
+// contextWindow values are measured from real provider rejections (see
+// source/github/common/src/constants/freebuff-models.ts); unmeasured models
+// get the conservative 131072 default. maxOutputTokens is a conservative
+// client-side cap — upstream enforces the real limit.
+const DEFAULT_WINDOW = 131_072
+const DEFAULT_OUTPUT = 32_768
 export const MODEL_CATALOG: FreebuffModelOption[] = [
-  { id: 'deepseek/deepseek-v4-flash', display: 'DeepSeek V4 Flash', quota: 'unlimited', type: 'unlimited' },
-  { id: 'mimo/mimo-v2.5', display: 'MiMo 2.5', quota: 'unlimited', type: 'unlimited' },
-  { id: 'deepseek/deepseek-v4-pro', display: 'DeepSeek V4 Pro', quota: '6/day', type: 'premium' },
-  { id: 'minimax/minimax-m3', display: 'MiniMax M3', quota: '6/day', type: 'premium' },
-  { id: 'openai/gpt-5.6-luna', display: 'GPT-5.6 Luna', quota: '6/day', type: 'premium' },
-  { id: 'z-ai/glm-5.2', display: 'GLM 5.2', quota: 'referral-gated', type: 'referral' },
+  { id: 'deepseek/deepseek-v4-flash', display: 'DeepSeek V4 Flash', quota: 'unlimited', type: 'unlimited', contextWindow: 1_048_576, maxOutputTokens: DEFAULT_OUTPUT },
+  { id: 'mimo/mimo-v2.5', display: 'MiMo 2.5', quota: 'unlimited', type: 'unlimited', contextWindow: DEFAULT_WINDOW, maxOutputTokens: DEFAULT_OUTPUT },
+  { id: 'deepseek/deepseek-v4-pro', display: 'DeepSeek V4 Pro', quota: '6/day', type: 'premium', contextWindow: DEFAULT_WINDOW, maxOutputTokens: DEFAULT_OUTPUT },
+  { id: 'minimax/minimax-m3', display: 'MiniMax M3', quota: '6/day', type: 'premium', contextWindow: 524_288, maxOutputTokens: DEFAULT_OUTPUT },
+  { id: 'openai/gpt-5.6-luna', display: 'GPT-5.6 Luna', quota: '6/day', type: 'premium', contextWindow: 1_000_000, maxOutputTokens: DEFAULT_OUTPUT },
+  { id: 'z-ai/glm-5.2', display: 'GLM 5.2', quota: 'referral-gated', type: 'referral', contextWindow: DEFAULT_WINDOW, maxOutputTokens: DEFAULT_OUTPUT },
 ]
 export function loadConfig(path = process.env.ROUTER_CONFIG ?? DEFAULT_CONFIG_PATH): RouterConfig {
   const resolved = resolve(path)

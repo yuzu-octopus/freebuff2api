@@ -391,6 +391,8 @@ describe('Router server', () => {
           body: JSON.stringify({
             model: 'deepseek/deepseek-v4-flash',
             messages: [{ role: 'user', content: 'hi' }],
+            // Tool-bearing request: quarantine applies (needsTools path).
+            tools: [{ type: 'function', function: { name: 'f', description: 'd', parameters: { type: 'object', properties: {} } } }],
             stream: true,
           }),
         })

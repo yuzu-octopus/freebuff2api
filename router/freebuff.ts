@@ -127,12 +127,15 @@ export class FreebuffTokenClient {
   }
 
   /** Release the session we admitted. */
-  async releaseSession(): Promise<void> {
-    if (!this.instanceId) return
+  async releaseSession(force = false): Promise<void> {
+    // Without `force`, a null instanceId means nothing to release. With it
+    // (model_locked recovery), the DELETE is keyed on user, not instance, so
+    // it goes out regardless — matching the CLI's release path.
+    if (!this.instanceId && !force) return
     try {
       const headers = {
         ...this.authHeaders(),
-        'x-freebuff-instance-id': this.instanceId,
+        ...(this.instanceId ? { 'x-freebuff-instance-id': this.instanceId } : {}),
       }
       await fetch(this.sessionUrl, { method: 'DELETE', headers }).catch(() => {})
     } catch {
@@ -225,6 +228,27 @@ export class FreebuffTokenClient {
     if (!res.ok) {
       const status = body?.status ?? `http_${res.status}`
       const detail = body?.message ?? body?.error ?? ''
+
+      // 409 model_locked: the account already has an active session bound to
+      // a different model (usually a stale row from a crashed client). The
+      // CLI honors a deliberate model switch by DELETing the locked session
+      // (keyed on user, not instance) and re-claiming on the requested model
+      // (use-freebuff-session.ts model_locked branch). Do the same, once —
+      // never loop, or a live session elsewhere would thrash.
+      if (res.status === 409 && status === 'model_locked') {
+        await this.releaseSession(true)
+        const retry = await fetch(this.sessionUrl, { method: 'POST', headers })
+        const retryBody = await retry.json().catch(() => null)
+        if (retry.ok) {
+          this.instanceId = retryBody?.instanceId ?? null
+          this.sessionModel = model
+          return retryBody
+        }
+        const retryStatus = retryBody?.status ?? `http_${retry.status}`
+        const retryDetail = retryBody?.message ?? retryBody?.error ?? ''
+        throw new Error(`Session admit failed [${retryStatus}]: ${retryDetail}`.trim())
+      }
+
       throw new Error(`Session admit failed [${status}]: ${detail}`.trim())
     }
 
@@ -318,12 +342,15 @@ async streamChat(
     // freebuff2api (prefix the first system message, or insert one at index 0
     // when absent), deduping when the caller already carries the marker.
     const chatMessages = ensureFreeMarker(messages as Array<{ role: string; content: unknown }>)
+    // run_id travels ONLY inside codebuff_metadata (the SDK contract,
+    // sdk/src/impl/llm.ts). A top-level `runId` field is rejected by stricter
+    // upstream validators (minimax: "Extra inputs are not permitted, field:
+    // 'runId'"), while deepseek silently tolerated it.
     const payload = {
       model,
       ...rest,
       messages: chatMessages,
       stream,
-      runId,
       ...(normalizedTools ? { tools: normalizedTools } : {}),
       ...(tool_choice ? { tool_choice } : {}),
       codebuff_metadata: {
@@ -447,32 +474,38 @@ export class FreebuffTokenPool {
    * preserves Freebuff's context/cache for the same user conversation).
    * Falls back to round-robin among all idle tokens.
    * Waits if all tokens are busy.
+   *
+   * When `needsTools` is set (request carries a tools array), tokens in their
+   * tool-quota cooldown are skipped — their free tool bucket is spent, so a
+   * tool call would just 429 again. Plain chat requests (no tools) are NOT
+   * blocked by a tool-quota quarantine: the chat bucket is separate, and
+   * failing those over would needlessly burn capacity.
    */
-  async acquire(model?: string): Promise<FreebuffTokenClient> {
+  async acquire(model?: string, needsTools = false): Promise<FreebuffTokenClient> {
     while (true) {
       // Prefer a token with an active session for the same model
       if (model) {
-        const match = this.pickIdleWithModel(model)
+        const match = this.pickIdleWithModel(model, needsTools)
         if (match) {
           match.setBusy(true)
           return match
         }
       }
       // Fall back to any idle token
-      const client = this.pickIdle()
+      const client = this.pickIdle(needsTools)
       if (client) {
         client.setBusy(true)
         return client
       }
-      // All busy (or all tool-quota-quarantined) — wait for a release. If
-      // every idle token is quarantined, no release() will ever come (the
-      // request that triggered the quarantine already threw), so also wake
-      // when the earliest cooldown expires. Without this, a single-token
-      // router hangs forever after one tool-quota 429 instead of retrying
-      // after the 15-minute cooldown.
+      // All busy (or all tool-quota-quarantined, for tool requests) — wait
+      // for a release. If every idle token is quarantined, no release() will
+      // ever come (the request that triggered the quarantine already threw),
+      // so also wake when the earliest cooldown expires. Without this, a
+      // single-token router hangs forever after one tool-quota 429 instead of
+      // retrying after the 15-minute cooldown.
       const { promise, resolve } = Promise.withResolvers<void>()
       this.waiters.push(resolve)
-      const earliestClear = this.earliestQuotaClear()
+      const earliestClear = needsTools ? this.earliestQuotaClear() : null
       const timer = earliestClear === null
         ? null
         : setTimeout(resolve, Math.max(0, earliestClear - Date.now()))
@@ -500,22 +533,23 @@ export class FreebuffTokenPool {
     return earliest
   }
 
-  private pickIdle(): FreebuffTokenClient | null {
+  private pickIdle(needsTools = false): FreebuffTokenClient | null {
     const count = this.clients.length
     for (let i = 0; i < count; i++) {
       const idx = (this.nextIndex + i) % count
-      if (!this.clients[idx].isBusy && !this.clients[idx].isToolQuotaExhausted()) {
+      const c = this.clients[idx]
+      if (!c.isBusy && (!needsTools || !c.isToolQuotaExhausted())) {
         this.nextIndex = (idx + 1) % count
-        return this.clients[idx]
+        return c
       }
     }
     return null
   }
 
   /** Pick an idle token that has an active session for `model`. */
-  private pickIdleWithModel(model: string): FreebuffTokenClient | null {
+  private pickIdleWithModel(model: string, needsTools = false): FreebuffTokenClient | null {
     for (const client of this.clients) {
-      if (!client.isBusy && !client.isToolQuotaExhausted() && client.getSessionModel() === model) {
+      if (!client.isBusy && (!needsTools || !client.isToolQuotaExhausted()) && client.getSessionModel() === model) {
         return client
       }
     }

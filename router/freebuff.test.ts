@@ -295,7 +295,9 @@ describe('FreebuffTokenPool', () => {
 
       const body = state.lastChatBody as Record<string, unknown> | null
       expect(body).toBeTruthy()
-      expect(body?.runId).toBe(runId)
+      // run_id travels ONLY inside codebuff_metadata (SDK contract); a
+      // top-level runId field is rejected by stricter upstream validators.
+      expect(body?.runId).toBeUndefined()
       const meta = body?.codebuff_metadata as Record<string, unknown> | undefined
       expect(meta?.run_id).toBe(runId)
       expect(meta?.cost_mode).toBe('free')
@@ -459,10 +461,12 @@ describe('FreebuffTokenPool', () => {
       pool.release(first)
     }
 
-    // first has session affinity for this model, but it is quarantined —
-    // acquire must skip it (via pickIdleWithModel and pickIdle) and return
-    // the other idle token.
-    const second = await pool.acquire('deepseek/deepseek-v4-flash')
+    // first has session affinity for this model, but it is quarantined — a
+    // TOOL request (needsTools=true) must skip it (via pickIdleWithModel and
+    // pickIdle) and return the other idle token. Plain chat is not blocked
+    // by a tool-quota quarantine (separate bucket), so acquire() without
+    // needsTools would still pick it.
+    const second = await pool.acquire('deepseek/deepseek-v4-flash', true)
     try {
       expect(second).not.toBe(first)
       expect(second.token).toBe('token-b')
@@ -483,8 +487,8 @@ describe('FreebuffTokenPool', () => {
     }
 
     // pickIdleWithModel prefers first (same-model session); its cooldown has
-    // expired so it is pickable again.
-    const again = await pool.acquire('deepseek/deepseek-v4-flash')
+    // expired so it is pickable again even for tool requests.
+    const again = await pool.acquire('deepseek/deepseek-v4-flash', true)
     try {
       expect(again).toBe(first)
     } finally {
@@ -503,7 +507,9 @@ describe('FreebuffTokenPool', () => {
     pool.release(first) // no future release will come — it's quarantined
 
     const started = Date.now()
-    const client = await pool.acquire('deepseek/deepseek-v4-flash')
+    // Tool request: the quarantined token must be skipped, so acquire waits
+    // for the cooldown timer to wake it.
+    const client = await pool.acquire('deepseek/deepseek-v4-flash', true)
     const elapsed = Date.now() - started
 
     try {

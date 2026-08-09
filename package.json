@@ -22,6 +22,7 @@
     "router/*.ts",
     "!router/*.test.ts",
     "!router/smoke-test.ts",
+    "!router/live-parity-test.ts",
     "!router/node_modules/**",
     "router.config.example.json",
     "README.md",

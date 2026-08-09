@@ -50,6 +50,11 @@ async function modelsResponse(pool: FreebuffTokenPool): Promise<Response> {
       created: baseTime,
       owned_by: 'freebuff',
       display: m.display,
+      // Anthropic Models API fields (Claude Code / anthropic-sdk read these
+      // to size context and cap output):
+      display_name: m.display,
+      context_window: m.contextWindow,
+      max_output_tokens: m.maxOutputTokens,
       quota: m.quota,
       type: m.type,
     }
@@ -148,7 +153,10 @@ async function executeWithLease(
   const maxAttempts = pool.tokenCount
 
   while (attempts < maxAttempts) {
-    client = await pool.acquire(model)
+    // Tool-bearing requests skip quarantined tokens (their free tool bucket
+    // is spent); plain chat is not blocked by a tool-quota quarantine.
+    const needsTools = Array.isArray((body as Record<string, unknown>).tools)
+    client = await pool.acquire(model, needsTools)
     try {
       result = await tryLeaseClient(client, model, body)
       const cleanup = async () => {
@@ -654,6 +662,31 @@ export async function startRouter(configOverride?: RouterConfig): Promise<Return
       // Route matching
       if (path === '/v1/models' || path === '/models') {
         return modelsResponse(pool)
+      }
+
+      // Anthropic Models API: GET /v1/models/{model_id} — Claude Code calls
+      // this to read context_window/max_output_tokens for the selected model.
+      const modelMatch = path.match(/^\/v1\/models\/([^/]+)$/)
+      if (modelMatch) {
+        const id = decodeURIComponent(modelMatch[1])
+        const m = MODEL_CATALOG.find((x) => x.id === id)
+        if (!m) {
+          return new Response(
+            JSON.stringify({ error: { message: `Model \`${id}\` not found` } }),
+            { status: 404, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        return new Response(
+          JSON.stringify({
+            id: m.id,
+            type: 'model',
+            display_name: m.display,
+            created_at: Math.floor(Date.now() / 1000),
+            context_window: m.contextWindow,
+            max_output_tokens: m.maxOutputTokens,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        )
       }
 
       if (path === '/v1/chat/completions' || path === '/chat/completions') {

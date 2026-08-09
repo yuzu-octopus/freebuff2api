@@ -128,6 +128,13 @@ bun test router/
 
 # End-to-end smoke test (starts a mock Freebuff backend)
 bun router/smoke-test.ts
+
+# Live parity test — real router + real Freebuff upstream. Verifies OpenAI +
+# Anthropic surfaces (stream/non-stream, tool calls, model list + limits,
+# streaming event sequences, concurrency). Skips tool checks when the daily
+# free tool budget is spent upstream. Requires the router running on
+# http://127.0.0.1:8787 (override ROUTER_URL) and FREEBUFF_TOKEN.
+bun router/live-parity-test.ts
 ```
 
 ## API surface
@@ -153,7 +160,15 @@ and the upstream response is returned unchanged.
 ### `GET /v1/models`
 
 Returns the model catalog enriched with live Freebuff rate limits and
-limited-time offers (e.g. Fable 5).
+limited-time offers (e.g. Fable 5). Each entry carries spec-complete
+metadata — `context_window`, `max_output_tokens`, `display_name` (Anthropic
+Models API fields, read by Claude Code / anthropic-sdk to size context and
+cap output) plus `quota`/`type`/`userRemaining`/`userResetAt`.
+
+### `GET /v1/models/{model_id}`
+
+Anthropic Models API shape: `{ id, type: 'model', display_name, created_at,
+context_window, max_output_tokens }`. 404 for unknown models.
 
 ### `POST /v1/chat/completions`
 

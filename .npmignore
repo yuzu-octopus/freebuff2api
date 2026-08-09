@@ -1,6 +1,7 @@
 # Tests, fixtures, dev-only — excluded from the published tarball
 router/*.test.ts
 router/smoke-test.ts
+router/live-parity-test.ts
 **/*.map
 
 # Local config / secrets
